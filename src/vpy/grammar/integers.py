@@ -14,7 +14,7 @@ decinteger = rf"""
   0+ (_? 0)*
 )
 """
-decinteger_re = re.compile(decinteger)
+decinteger_re = re.compile(decinteger, re.VERBOSE)
 
 bininteger = rf"""
 (
@@ -23,7 +23,7 @@ bininteger = rf"""
   (_? {bindigit})+
 )
 """
-bininteger_re = re.compile(bininteger)
+bininteger_re = re.compile(bininteger, re.VERBOSE)
 
 octinteger = rf"""
 (
@@ -32,7 +32,7 @@ octinteger = rf"""
   (_? {octdigit})+
 )
 """
-octinteger_re = re.compile(octinteger)
+octinteger_re = re.compile(octinteger, re.VERBOSE)
 
 hexinteger = rf"""
 (
@@ -41,4 +41,4 @@ hexinteger = rf"""
   (_? {hexdigit})+
 )
 """
-hexinteger_re = re.compile(hexinteger)
+hexinteger_re = re.compile(hexinteger, re.VERBOSE)
