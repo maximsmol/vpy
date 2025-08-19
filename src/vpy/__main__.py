@@ -1,49 +1,23 @@
-import difflib
-from tokenize import TokenInfo, generate_tokens
-
-from .lex import Lexer, Token
+from .lex import Lexer
+from .parse import Parser
 
 
 def main() -> None:
-    # todo(maximsmol): deal with encodings
     src = "1 + 2"
 
-    toks_ours: list[Token] = []
     l = Lexer(data=src)
-    while True:
-        tok = l.next()
-        toks_ours.append(tok)
-        print(tok)
-        if tok.type == "endmarker":
-            break
+    p = Parser(lex=l)
+    print(p.file_input())
 
-    toks_ours_lines = [str(x.token_info()) for x in toks_ours if x.type != "whitespace"]
+    cur = p.tok()
+    if cur.type == "endmarker":
+        return
 
-    print(">>>")
-
-    # >>> Basic testing
-
-    ran = False
-
-    def readline() -> str:
-        nonlocal ran
-
-        if ran:
-            return ""
-
-        ran = True
-        return src
-
-    def token_info_str(x: TokenInfo) -> str:
-        return str(
-            TokenInfo(type=x.type, string=x.string, start=x.start, end=x.end, line="")
-        )
-
-    toks_reference = list(generate_tokens(readline))
-    toks_reference_lines = [token_info_str(x) for x in toks_reference]
-
-    for l in difflib.unified_diff(toks_ours_lines, toks_reference_lines):
-        print(l)
+    print()
+    print(">>> Leftover tokens:")
+    while cur.type != "endmarker":
+        print(cur)
+        cur = p.tok()
 
 
 if __name__ == "__main__":
