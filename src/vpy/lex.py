@@ -74,6 +74,33 @@ class Lexer:
         if self.data[-1] not in "\n\r":
             self.data += "\n"
 
+    def debug_pos(self, *, idx: int | None = None) -> tuple[str, str]:
+        if idx is None:
+            idx = self.pos.idx
+
+        # todo(maximsmol): support \r
+        line_start = max(self.data.rfind("\n", 0, idx), 0)
+        line_end = min(self.data.find("\n", idx), len(self.data))
+
+        # no more than 80 characters total, keep at least 10 characters after the cursor, if there are enough
+        suffix_len = min(line_end - idx, 10)
+
+        prefix = ""
+        suffix = ""
+
+        min_start = idx - (80 - suffix_len)
+        if line_start < min_start:
+            line_start = min_start + 1
+            prefix = "…"
+
+        if line_end > line_start + 80:
+            line_end = line_start + 79
+            suffix = "…"
+
+        return prefix + self.data[line_start:line_end] + suffix, " " * (
+            idx - line_start - 1 + len(prefix)
+        ) + "^"
+
     def next(self) -> Token:
         if self.pos.idx == len(self.data):
             return Token(type="endmarker", start=self.pos, end=self.pos, text="")

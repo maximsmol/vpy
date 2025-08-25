@@ -59,6 +59,7 @@ def process(src: str) -> bool:
 
 def main() -> None:
     assert process("1 + 2")
+    assert process("1 + 2 + 3")
 
     root_p = Path(tokenize.__file__).parent
 
