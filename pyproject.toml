@@ -4,6 +4,7 @@ version = "0.1.0"
 description = ""
 requires-python = ">=3.13"
 dependencies = [
+    "llvmlite>=0.44.0",
 ]
 
 [build-system]

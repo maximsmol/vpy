@@ -3,10 +3,21 @@ from ctypes import CFUNCTYPE, c_int64
 import llvmlite.binding as llvm
 
 from vpy.compile import Compiler
-from vpy.interpret import Interpreter
 
 from .lex import Lexer
 from .parse import Parser
+
+
+def setup_llvm() -> llvm.ExecutionEngine:
+    llvm.initialize()
+    llvm.initialize_native_target()
+    llvm.initialize_native_asmprinter()
+
+    target = llvm.Target.from_default_triple()
+    target_machine = target.create_target_machine()
+
+    backing_mod = llvm.parse_assembly("")
+    return llvm.create_mcjit_compiler(backing_mod, target_machine)
 
 
 def execute(engine: llvm.ExecutionEngine, code: str) -> int:
@@ -26,15 +37,7 @@ def execute(engine: llvm.ExecutionEngine, code: str) -> int:
 
 
 def main() -> None:
-    llvm.initialize()
-    llvm.initialize_native_target()
-    llvm.initialize_native_asmprinter()
-
-    target = llvm.Target.from_default_triple()
-    target_machine = target.create_target_machine()
-
-    backing_mod = llvm.parse_assembly("")
-    engine = llvm.create_mcjit_compiler(backing_mod, target_machine)
+    engine = setup_llvm()
 
     src = "1 + 2 + 3"
 

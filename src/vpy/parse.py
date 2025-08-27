@@ -1,5 +1,6 @@
 import ast
-from collections.abc import Callable
+from collections.abc import Callable, Generator
+from contextlib import contextmanager
 from dataclasses import dataclass, field, fields
 from functools import wraps
 from typing import Concatenate, Generic, Literal, TypeVar, override
@@ -441,9 +442,10 @@ class Parser:
     def file_input(self) -> FileInput:
         return FileInput(type="file_input", xs=[self.statement()])
 
-    def parse(self) -> FileInput:
+    @contextmanager
+    def parse_wrapper(self) -> Generator[None]:
         try:
-            return self.file_input()
+            yield
         except Exception as e:
             idx = None
             if len(self.token_stack) > 0:
@@ -453,3 +455,11 @@ class Parser:
             e.add_note(l)
             e.add_note(cursor)
             raise
+
+    def parse(self) -> FileInput:
+        with self.parse_wrapper():
+            return self.file_input()
+
+    def parse_expr(self) -> StarredExpression:
+        with self.parse_wrapper():
+            return self.starred_expression()
