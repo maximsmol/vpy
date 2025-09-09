@@ -1,10 +1,14 @@
+import re
 from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 
+from vpy.lex import Token
+
 from .parse import (
     AExpr,
     AndExpr,
+    AssignmentStmt,
     AstLiteral,
     Atom,
     ExpressionStmt,
@@ -23,12 +27,20 @@ from .parse import (
     XorExpr,
 )
 
+llvm_id_re = re.compile(r"^[-a-zA-Z$._][-a-zA-Z$._0-9]*$")
+
+
+def llvmstr(x: str) -> str:
+    return x.replace('"', f"\\{ord('"'):x}")
+
 
 @dataclass
 class Compiler:
     var_idx: int = 1
     indent_level: int = 0
     lines: list[str] = field(default_factory=list)
+
+    locals: dict[str, str] = field(default_factory=dict)
 
     @contextmanager
     def indent(self) -> Generator[None]:
@@ -38,15 +50,23 @@ class Compiler:
         finally:
             self.indent_level -= 1
 
-    def next_var(self) -> int:
-        res = self.var_idx
+    def next_var(self, *, prefix: str = "") -> str:
+        idx = self.var_idx
         self.var_idx += 1
-        return res
+
+        # note: we deliberately do not use unnamed variables (and use `.{idx}` instead)
+        # since otherwise we have to emit them exactly in order or llvm rejects the program
+        res = f"{prefix}.{idx}"
+
+        if llvm_id_re.match(res) is not None:
+            return res
+
+        return llvmstr(res)
 
     def emit(self, x: str) -> None:
         self.lines.append("  " * self.indent_level + x)
 
-    def compile_expr(self, x: Node) -> None:
+    def compile_expr(self, x: Node) -> str:
         if isinstance(x, StarredExpression):
             return self.compile_expr(x.x)
 
@@ -89,6 +109,10 @@ class Compiler:
             return self.compile_expr(x.x)
 
         if isinstance(x, Atom):
+            if isinstance(x.x, Token):
+                assert x.x.type == "identifier"
+                return self.locals[x.x.nfkd()]
+
             return self.compile_expr(x.x)
 
         if isinstance(x, AstLiteral):
@@ -110,6 +134,7 @@ class Compiler:
             return
 
         if isinstance(x, Statement):
+            self.emit("\n".join(f"; {l}" for l in x.unparse().splitlines()))
             self.compile(x.x)
             return
 
@@ -126,6 +151,22 @@ class Compiler:
             res = self.compile_expr(x.x)
             self.emit("")
             self.emit(f"ret i64 %{res}")
+            return
+
+        if isinstance(x, AssignmentStmt):
+            assert len(x.targets) == 1
+
+            target = x.targets[0]
+            assert len(target.xs) == 1
+
+            name = target.xs[0].x.nfkd()
+            var = self.next_var(prefix=name)
+            self.locals[name] = var
+
+            val = self.compile_expr(x.value)
+
+            self.emit(f"%{var} = bitcast i64 %{val} to i64")
+            self.emit("")
             return
 
         raise NotImplementedError(f"unknown node: {x.type}")

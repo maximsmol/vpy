@@ -5,6 +5,7 @@ description = ""
 requires-python = ">=3.13"
 dependencies = [
     "llvmlite>=0.44.0",
+    "regex>=2025.7.34",
 ]
 
 [build-system]

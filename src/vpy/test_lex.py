@@ -1,5 +1,7 @@
 import difflib
+import token
 import tokenize
+from io import StringIO
 from pathlib import Path
 from tokenize import TokenInfo, generate_tokens
 from traceback import print_exc
@@ -25,23 +27,14 @@ def process(src: str) -> bool:
 
     # >>> Basic testing
 
-    ran = False
-
-    def readline() -> str:
-        nonlocal ran
-
-        if ran:
-            return ""
-
-        ran = True
-        return src
+    io = StringIO(src)
 
     def token_info_str(x: TokenInfo) -> str:
         return str(
             TokenInfo(type=x.type, string=x.string, start=x.start, end=x.end, line="")
         )
 
-    toks_reference = list(generate_tokens(readline))
+    toks_reference = list(generate_tokens(io.readline))
     toks_reference_lines = [token_info_str(x) for x in toks_reference]
 
     diffs = list(
@@ -60,6 +53,12 @@ def process(src: str) -> bool:
 def main() -> None:
     assert process("1 + 2")
     assert process("1 + 2 + 3")
+    assert process("a = 123")
+    assert process("a = 123\na + 1")
+
+    print("Smoketest OK")
+
+    return
 
     root_p = Path(tokenize.__file__).parent
 

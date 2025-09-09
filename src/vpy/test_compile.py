@@ -39,7 +39,8 @@ def execute(engine: llvm.ExecutionEngine, code: str) -> int:
 def main() -> None:
     engine = setup_llvm()
 
-    src = "1 + 2 + 3"
+    # src = "1 + 2 + 3"
+    src = "a = 123\na + 10"
 
     l = Lexer(data=src)
     p = Parser(lex=l)

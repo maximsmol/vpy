@@ -1,4 +1,4 @@
-import re
+import regex
 
 operator = r"""
 (
@@ -26,4 +26,4 @@ operator = r"""
 )
 """
 
-operator_re = re.compile(operator, re.VERBOSE)
+operator_re = regex.compile(operator, regex.VERBOSE)

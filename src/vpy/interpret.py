@@ -1,6 +1,9 @@
+from vpy.lex import Token
+
 from .parse import (
     AExpr,
     AndExpr,
+    AssignmentStmt,
     AstLiteral,
     Atom,
     ExpressionStmt,
@@ -21,6 +24,9 @@ from .parse import (
 
 
 class Interpreter:
+    def __init__(self) -> None:
+        self.locals: dict[str, object] = {}
+
     def eval(self, x: Node) -> object:
         if isinstance(x, StarredExpression):
             return self.eval(x.x)
@@ -58,6 +64,10 @@ class Interpreter:
             return self.eval(x.x)
 
         if isinstance(x, Atom):
+            if isinstance(x.x, Token):
+                assert x.x.type == "identifier"
+                return self.locals[x.x.nfkd()]
+
             return self.eval(x.x)
 
         if isinstance(x, AstLiteral):
@@ -87,6 +97,19 @@ class Interpreter:
 
         if isinstance(x, ExpressionStmt):
             _ = self.eval(x.x)
+            return
+
+        if isinstance(x, AssignmentStmt):
+            assert len(x.targets) == 1
+
+            target = x.targets[0]
+            assert len(target.xs) == 1
+
+            name = target.xs[0]
+
+            val = self.eval(x.value)
+            self.locals[name.x.nfkd()] = val
+
             return
 
         raise NotImplementedError(f"unknown node: {x.type}")

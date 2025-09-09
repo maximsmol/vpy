@@ -1,4 +1,4 @@
-import re
+import regex
 
 nonzerodigit = r"([1-9])"
 digit = r"([0-9])"
@@ -14,7 +14,7 @@ decinteger = rf"""
   0+ (_? 0)*
 )
 """
-decinteger_re = re.compile(decinteger, re.VERBOSE)
+decinteger_re = regex.compile(decinteger, regex.VERBOSE)
 
 bininteger = rf"""
 (
@@ -23,7 +23,7 @@ bininteger = rf"""
   (_? {bindigit})+
 )
 """
-bininteger_re = re.compile(bininteger, re.VERBOSE)
+bininteger_re = regex.compile(bininteger, regex.VERBOSE)
 
 octinteger = rf"""
 (
@@ -32,7 +32,7 @@ octinteger = rf"""
   (_? {octdigit})+
 )
 """
-octinteger_re = re.compile(octinteger, re.VERBOSE)
+octinteger_re = regex.compile(octinteger, regex.VERBOSE)
 
 hexinteger = rf"""
 (
@@ -41,4 +41,4 @@ hexinteger = rf"""
   (_? {hexdigit})+
 )
 """
-hexinteger_re = re.compile(hexinteger, re.VERBOSE)
+hexinteger_re = regex.compile(hexinteger, regex.VERBOSE)

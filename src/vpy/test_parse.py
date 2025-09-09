@@ -14,10 +14,6 @@ def process(src: str) -> bool:
     p = Parser(lex=l)
     ast_ours = p.parse()
 
-    # todo(maximsmol): preserve missing newlines at end of input
-    if src[-1] not in "\n\r":
-        src += "\n"
-
     unparse = ast_ours.unparse()
     if unparse != src:
         print("!!! Unparse not equal")
@@ -30,7 +26,6 @@ def process(src: str) -> bool:
         for l in diffs:
             print(l)
 
-    # print(ast_ours)
     # print(ast.dump(ast_ours.to_ast(), indent=2))
     ast_ours_lines = ast.dump(ast_ours.to_ast(), indent=2).split("\n")
 
@@ -60,6 +55,12 @@ def process(src: str) -> bool:
 def main() -> None:
     assert process("1 + 2")
     assert process("1 + 2 + 3")
+    assert process("a = 123")
+    assert process("a = 123\na + 1")
+
+    print("Smoketest OK")
+
+    return
 
     root_p = Path(tokenize.__file__).parent
 

@@ -1,6 +1,7 @@
 import ast
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
+from copy import copy, deepcopy
 from dataclasses import dataclass, field, fields
 from functools import wraps
 from typing import Concatenate, Generic, Literal, TypeVar, override
@@ -100,10 +101,14 @@ class AstLiteral(Node[Literal["literal"]]):
 
 @dataclass(kw_only=True)
 class Atom(Node[Literal["atom"]]):
-    x: AstLiteral
+    x: AstLiteral | Token
 
     @override
     def to_ast(self) -> ast.AST:
+        if isinstance(self.x, Token):
+            assert self.x.type == "identifier"
+            return ast.Name(self.x.text)
+
         return self.x.to_ast()
 
 
@@ -239,8 +244,46 @@ class ExpressionStmt(Node[Literal["expression_stmt"]]):
 
 
 @dataclass(kw_only=True)
+class Target(Node[Literal["target"]]):
+    x: Token
+
+    @override
+    def to_ast(self) -> ast.Name:
+        return ast.Name(id=self.x.text, ctx=ast.Store())
+
+
+@dataclass(kw_only=True)
+class TargetList(Node[Literal["target_list"]]):
+    xs: list[Target]
+
+    @override
+    def to_ast(self) -> ast.Name:
+        assert len(self.xs) == 1
+        return self.xs[0].to_ast()
+
+
+@dataclass(kw_only=True)
+class AssignmentStmt(Node[Literal["assignment_stmt"]]):
+    targets: list[TargetList]
+    value: StarredExpression
+
+    @override
+    def to_ast(self) -> ast.AST:
+        targets: list[ast.expr] = []
+        for x in self.targets:
+            cur = x.to_ast()
+            assert isinstance(cur, ast.expr)
+            targets.append(cur)
+
+        value = self.value.to_ast()
+        assert isinstance(value, ast.expr)
+
+        return ast.Assign(targets=targets, value=value)
+
+
+@dataclass(kw_only=True)
 class SimpleStmt(Node[Literal["simple_stmt"]]):
-    x: ExpressionStmt
+    x: ExpressionStmt | AssignmentStmt
 
     @override
     def to_ast(self) -> ast.AST:
@@ -310,11 +353,27 @@ def parse_function[**T, R: Node[str]](
     return res
 
 
+class ParseFailedError(RuntimeError): ...
+
+
 class Parser:
     def __init__(self, *, lex: Lexer) -> None:
         self.lex: Lexer = lex
         self.token_stack: list[Token] = []
         self.children: list[Node[str] | Token] = []
+
+    @contextmanager
+    def checkpoint(self) -> Generator[None]:
+        old = deepcopy(self)
+
+        try:
+            yield
+        except Exception:
+            self.lex = old.lex
+            self.token_stack = old.token_stack
+            self.children = old.children
+
+            raise
 
     def tok(self) -> Token:
         if len(self.token_stack) > 0:
@@ -325,25 +384,46 @@ class Parser:
         self.children.append(res)
         return res
 
-    def untok(self) -> None:
-        x = self.children[-1]
-        assert isinstance(x, Token)
-
-        self.token_stack.append(x)
-        _ = self.children.pop()
-
+    # todo(maximsmol): use token classes here instead of raw string type
     def opt(self, typ: str) -> Token | None:
-        x = self.tok()
-        if x.type != typ:
-            self.untok()
-            return None
+        try:
+            with self.checkpoint():
+                x = self.tok()
+                if x.type != typ:
+                    raise ParseFailedError("opt")
 
-        return x
+                return x
+        except ParseFailedError:
+            return None
 
     def expect(self, typ: str) -> Token:
         res = self.tok()
         if res.type != typ:
-            raise RuntimeError(f"expected <{typ}>, found <{res.type}>")
+            raise ParseFailedError(f"expected <{typ}>, found <{res.type}>")
+
+        return res
+
+    def expect_op(self, text: str) -> Token:
+        res = self.tok()
+        if res.type != "operator":
+            raise ParseFailedError(f"expected <operator {text}>, found <{res.type}>")
+
+        if res.text != text:
+            raise ParseFailedError(
+                f"expected <operator {text}>, found <operator {text}>"
+            )
+
+        return res
+
+    def expect_delim(self, text: str) -> Token:
+        res = self.tok()
+        if res.type != "delimiter":
+            raise ParseFailedError(f"expected <delimiter {text}>, found <{res.type}>")
+
+        if res.text != text:
+            raise ParseFailedError(
+                f"expected <delimiter {text}>, found <delimiter {text}>"
+            )
 
         return res
 
@@ -353,6 +433,10 @@ class Parser:
 
     @parse_function
     def atom(self) -> Atom:
+        ident = self.opt("identifier")
+        if ident is not None:
+            return Atom(type="atom", x=ident)
+
         return Atom(type="atom", x=self.literal())
 
     @parse_function
@@ -380,15 +464,11 @@ class Parser:
         lhs = self.a_expr_base()
 
         while True:
-            # todo(maximsmol): fix eating this whitespace even if there is no +
-            _ = self.opt("whitespace")
-
-            op = self.opt("operator")
-            if op is None:
-                return lhs
-
-            if op.text != "+":
-                self.untok()
+            try:
+                with self.checkpoint():
+                    _ = self.opt("whitespace")
+                    op = self.expect_op("+")
+            except ParseFailedError:
                 return lhs
 
             _ = self.opt("whitespace")
@@ -421,12 +501,68 @@ class Parser:
         return StarredExpression(type="starred_expression", x=self.or_expr())
 
     @parse_function
+    def target(self) -> Target:
+        return Target(type="target", x=self.expect("identifier"))
+
+    @parse_function
+    def target_list(self) -> TargetList:
+        xs: list[Target] = [self.target()]
+
+        while True:
+            try:
+                with self.checkpoint():
+                    _ = self.opt("whitespace")
+                    _ = self.expect_delim(",")
+            except ParseFailedError:
+                break
+
+            _ = self.opt("whitespace")
+            xs.append(self.target())
+
+        # trailing comma
+        try:
+            with self.checkpoint():
+                _ = self.opt("whitespace")
+                _ = self.expect_delim(",")
+        except ParseFailedError:
+            ...
+
+        return TargetList(type="target_list", xs=xs)
+
+    @parse_function
+    def assignment_stmt(self) -> AssignmentStmt:
+        targets: list[TargetList] = []
+
+        while True:
+            try:
+                with self.checkpoint():
+                    x = self.target_list()
+                    _ = self.opt("whitespace")
+                    _ = self.expect_delim("=")
+
+                targets.append(x)
+            except ParseFailedError:
+                if len(targets) == 0:
+                    raise
+
+                break
+
+        _ = self.opt("whitespace")
+        return AssignmentStmt(
+            type="assignment_stmt", targets=targets, value=self.starred_expression()
+        )
+
+    @parse_function
     def expression_stmt(self) -> ExpressionStmt:
         return ExpressionStmt(type="expression_stmt", x=self.starred_expression())
 
     @parse_function
     def simple_stmt(self) -> SimpleStmt:
-        return SimpleStmt(type="simple_stmt", x=self.expression_stmt())
+        try:
+            with self.checkpoint():
+                return SimpleStmt(type="simple_stmt", x=self.assignment_stmt())
+        except ParseFailedError:
+            return SimpleStmt(type="simple_stmt", x=self.expression_stmt())
 
     @parse_function
     def stmt_list(self) -> StmtList:
@@ -440,7 +576,14 @@ class Parser:
 
     @parse_function
     def file_input(self) -> FileInput:
-        return FileInput(type="file_input", xs=[self.statement()])
+        xs: list[Statement] = []
+        while True:
+            end = self.opt("endmarker")
+            if end is not None:
+                break
+            xs.append(self.statement())
+
+        return FileInput(type="file_input", xs=xs)
 
     @contextmanager
     def parse_wrapper(self) -> Generator[None]:
