@@ -1,5 +1,4 @@
 import difflib
-import token
 import tokenize
 from io import StringIO
 from pathlib import Path
@@ -20,6 +19,7 @@ def process(src: str) -> bool:
             break
 
         toks_ours.append(tok)
+        # print(tok)
         if tok.type == "endmarker":
             break
 
@@ -35,6 +35,8 @@ def process(src: str) -> bool:
         )
 
     toks_reference = list(generate_tokens(io.readline))
+    # for tok in toks_reference:
+    #     print(tok)
     toks_reference_lines = [token_info_str(x) for x in toks_reference]
 
     diffs = list(
@@ -51,12 +53,29 @@ def process(src: str) -> bool:
 
 
 def main() -> None:
-    assert process("1 + 2")
-    assert process("1 + 2 + 3")
-    assert process("a = 123")
-    assert process("a = 123\na + 1")
+    smoke_test = True
+    # smoke_test = False
+    if smoke_test:
+        assert process("1 + 2")
+        assert process("1 + 2 + 3")
+        assert process("a = 123")
+        assert process("a = 123\na + 1")
+        assert process("10 % 6")
+        assert process("1 == 1")
+        assert process("2 * 5")
+        assert process("a = 1\na += 2")
+        assert process("True")
+        assert process("a = 10\nif False:\na = 20\na")
 
-    print("Smoketest OK")
+        print("Smoketest OK")
+
+    root_p = Path(__file__).parent.parent.parent / "tests/problems_99"
+
+    for f in root_p.iterdir():
+        print(f">>> {f.relative_to(root_p)}:")
+        ok = process(f.read_text())
+        if not ok:
+            break
 
     return
 

@@ -1,9 +1,9 @@
 import token
+import unicodedata
 from copy import copy
 from dataclasses import dataclass
 from tokenize import TokenInfo
 from typing import override
-import unicodedata
 
 import regex
 
@@ -44,19 +44,22 @@ class Token:
     def token_info(self) -> TokenInfo | None:
         text = self.text
         end = self.end
-        if self.type == "newline":
+        if self.type in {"newline", "nl"}:
             end = copy(end)
             end.line -= 1
             end.col = self.start.col + max(len(self.text), 1)
 
         return TokenInfo(
             type={
+                "nl": token.NL,
                 "newline": token.NEWLINE,
                 "decinteger": token.NUMBER,
                 "operator": token.OP,
                 "endmarker": token.ENDMARKER,
                 "identifier": token.NAME,
                 "delimiter": token.OP,
+                "indent": token.INDENT,
+                "dedent": token.DEDENT,
             }[self.type],
             string=text,
             start=self.start.tuple(),
@@ -69,9 +72,11 @@ toks: list[tuple[regex.Pattern[str], str]] = [
     (regex.compile(r"[ \t\f]+"), "whitespace"),
     (regex.compile(r"\n|\r\n|\r"), "newline"),
     (g_int.decinteger_re, "decinteger"),
-    (g_op.operator_re, "operator"),
+    (g_delim.delimiters_long_re, "delimiter"),
+    (g_op.operator_long_re, "operator"),
+    (g_delim.delimiters_short_re, "delimiter"),
+    (g_op.operator_short_re, "operator"),
     (g_id.identifier_re, "identifier"),
-    (g_delim.delimiters_re, "delimiter"),
 ]
 
 
@@ -79,7 +84,10 @@ class Lexer:
     def __init__(self, *, data: str) -> None:
         self.data: str = data
         self.pos: Pos = Pos(idx=0, line=1, col=1)
-        self.last_was_newline = False
+        self.last_was_newline: bool = False
+
+        self.token_stack: list[Token] = []
+        self.indentation_stack: list[int] = [0]
 
     def debug_pos(self, *, idx: int | None = None) -> tuple[str, str]:
         if idx is None:
@@ -109,19 +117,37 @@ class Lexer:
         ) + "^"
 
     def next(self) -> Token:
+        if len(self.token_stack) > 0:
+            return self.token_stack.pop()
+
+        return self.lex_more()
+
+    def lex_more(self) -> Token:
         if self.pos.idx == len(self.data):
             if not self.last_was_newline:
-                self.last_was_newline = True
                 start = copy(self.pos)
 
                 self.pos.line += 1
                 self.pos.col = 1
 
+                self.last_was_newline = True
+
                 return Token(type="newline", start=start, end=copy(self.pos), text="")
 
-            return Token(
+            endmarker = Token(
                 type="endmarker", start=copy(self.pos), end=copy(self.pos), text=""
             )
+            self.token_stack.append(endmarker)
+
+            while len(self.indentation_stack) > 1:
+                self.indentation_stack.pop()
+                self.token_stack.append(
+                    Token(
+                        type="dedent", start=copy(self.pos), end=copy(self.pos), text=""
+                    )
+                )
+
+            return self.token_stack.pop()
 
         for r, t in toks:
             m = r.match(self.data, self.pos.idx)
@@ -140,7 +166,38 @@ class Lexer:
             else:
                 self.pos.col += len(match_str)
 
+            start_of_line = start.col == 1
             self.last_was_newline = t == "newline"
+
+            if start_of_line:
+                if t == "newline":
+                    t = "nl"
+                else:
+                    cur_level = self.indentation_stack[-1]
+                    level = len(match_str) if t == "whitespace" else 0
+
+                    if level == cur_level:
+                        pass
+                    elif level > cur_level:
+                        self.indentation_stack.append(level)
+                        t = "indent"
+                    else:
+                        assert level in self.indentation_stack
+
+                        dedent = Token(
+                            type="dedent",
+                            start=copy(self.pos),
+                            end=copy(self.pos),
+                            text="",
+                        )
+
+                        lookahead = self.lex_more()
+                        if lookahead.type != "newline":
+                            self.token_stack.append(lookahead)
+                            while self.indentation_stack[-1] != level:
+                                self.token_stack.append(dedent)
+                                _ = self.indentation_stack.pop()
+
             return Token(type=t, start=start, end=copy(self.pos), text=match_str)
 
         e = RuntimeError(f"unknown token at {self.pos}")

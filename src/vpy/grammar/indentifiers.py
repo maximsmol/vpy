@@ -1,3 +1,5 @@
+from textwrap import dedent
+
 import regex
 
 # todo(maximsmol): deal with NFKC normalization
@@ -11,18 +13,15 @@ id_start = r"""
 \p{Nl}
 \_
 \p{Other_ID_Start}
-"""
+""".replace("\n", "")
 
-id_continue = (
-    id_start
-    + r"""
-\p{Mn}
-\p{Mc}
-\p{Nd}
-\p{Pc}
-\p{Other_ID_Continue}
-"""
-)
+id_continue = id_start + dedent(r"""
+    \p{Mn}
+    \p{Mc}
+    \p{Nd}
+    \p{Pc}
+    \p{Other_ID_Continue}
+    """).replace("\n", "")
 
 identifier = rf"""
 (

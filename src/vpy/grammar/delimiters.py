@@ -1,21 +1,11 @@
 import regex
 
-delimiters = r"""
+delimiters_short = r"[()[\]{},:!.;@=]"
+delimiters_short_re = regex.compile(delimiters_short, regex.VERBOSE)
+
+delimiters_long = r"""
 (
-  \(
-| \)
-| \[
-| \]
-| \{
-| \}
-| ,
-| :
-| !
-| \.
-| ;
-| @
-| =
-| ->
+  ->
 | \+=
 | -=
 | \*=
@@ -32,4 +22,4 @@ delimiters = r"""
 )
 """
 
-delimiters_re = regex.compile(delimiters, regex.VERBOSE)
+delimiters_long_re = regex.compile(delimiters_long, regex.VERBOSE)

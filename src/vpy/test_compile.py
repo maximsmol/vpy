@@ -40,7 +40,12 @@ def main() -> None:
     engine = setup_llvm()
 
     # src = "1 + 2 + 3"
-    src = "a = 123\na + 10"
+    # src = "a = 123\na + 10"
+    # src = "10 % 6"
+    # src = "1 == 1"
+    # src = "2 * 5"
+    # src = "a = 1\na += 2\na"
+    src = "True"
 
     l = Lexer(data=src)
     p = Parser(lex=l)

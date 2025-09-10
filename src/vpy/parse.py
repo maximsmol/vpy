@@ -1,7 +1,7 @@
 import ast
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
-from copy import copy, deepcopy
+from copy import deepcopy
 from dataclasses import dataclass, field, fields
 from functools import wraps
 from typing import Concatenate, Generic, Literal, TypeVar, override
@@ -95,8 +95,25 @@ class AstLiteral(Node[Literal["literal"]]):
 
     @override
     def to_ast(self) -> ast.Constant:
-        assert self.x.type == "decinteger"
-        return ast.Constant(value=int(self.x.text))
+        match self.x.type:
+            case "decinteger":
+                return ast.Constant(value=int(self.x.text))
+
+            case "identifier":
+                match self.x.text:
+                    case "True":
+                        value = True
+                    case "False":
+                        value = True
+                    case "None":
+                        value = None
+                    case _:
+                        raise NotImplementedError(f"unknown named literal: {self.x.text}")
+
+                return ast.Constant(value=value)
+
+            case _:
+                raise NotImplementedError(f"unknown literal token: {self.x}")
 
 
 @dataclass(kw_only=True)
@@ -107,7 +124,7 @@ class Atom(Node[Literal["atom"]]):
     def to_ast(self) -> ast.AST:
         if isinstance(self.x, Token):
             assert self.x.type == "identifier"
-            return ast.Name(self.x.text)
+            return ast.Name(self.x.nfkd())
 
         return self.x.to_ast()
 
@@ -141,11 +158,43 @@ class UExpr(Node[Literal["u_expr"]]):
 
 @dataclass(kw_only=True)
 class MExpr(Node[Literal["m_expr"]]):
+    lhs: "MExpr | None"
+    op: Token | None
     rhs: UExpr
 
     @override
     def to_ast(self) -> ast.AST:
-        return self.rhs.to_ast()
+        if self.lhs is None:
+            return self.rhs.to_ast()
+
+        # todo(maximsmol): use inheritance to make this obvious
+        assert self.op is not None
+
+        left = self.lhs.to_ast()
+        assert isinstance(left, ast.expr)
+
+        match self.op.text:
+            case "*":
+                op = ast.Mult()
+
+            case "%":
+                op = ast.Mod()
+
+            case _:
+                raise NotImplementedError(f"unknown operator: {self.op.text!r}")
+
+        right = self.rhs.to_ast()
+        assert isinstance(right, ast.expr)
+
+        return ast.BinOp(left=left, op=op, right=right)
+
+    @override
+    def unparse(self, *, parens: bool = False) -> str:
+        x = super().unparse(parens=parens)
+        if parens:
+            return f"({x})"
+
+        return x
 
 
 @dataclass(kw_only=True)
@@ -223,8 +272,63 @@ class OrExpr(Node[Literal["or_expr"]]):
 
 
 @dataclass(kw_only=True)
+class Comparison(Node[Literal["comparison"]]):
+    lhs: OrExpr
+    ops: list[Token] | None
+    rhs: list[OrExpr] | None
+
+    @override
+    def to_ast(self) -> ast.AST:
+        if self.ops is None:
+            return self.lhs.to_ast()
+
+        # todo(maximsmol): use inheritance to make this obvious
+        assert self.rhs is not None
+
+        left = self.lhs.to_ast()
+        assert isinstance(left, ast.expr)
+
+        comparators: list[ast.expr] = []
+        for x in self.rhs:
+            cur = x.to_ast()
+            assert isinstance(cur, ast.expr)
+            comparators.append(cur)
+
+        return ast.Compare(
+            left=left, ops=[ast.Eq()] * len(self.ops), comparators=comparators
+        )
+
+
+@dataclass(kw_only=True)
+class NotTest(Node[Literal["not_test"]]):
+    x: Comparison
+
+    @override
+    def to_ast(self) -> ast.AST:
+        return self.x.to_ast()
+
+
+@dataclass(kw_only=True)
+class AndTest(Node[Literal["and_test"]]):
+    rhs: NotTest
+
+    @override
+    def to_ast(self) -> ast.AST:
+        return self.rhs.to_ast()
+
+
+@dataclass(kw_only=True)
+class OrTest(Node[Literal["or_test"]]):
+    rhs: AndTest
+
+    @override
+    def to_ast(self) -> ast.AST:
+        return self.rhs.to_ast()
+
+
+@dataclass(kw_only=True)
 class StarredExpression(Node[Literal["starred_expression"]]):
-    x: OrExpr
+    x: OrTest
 
     @override
     def to_ast(self) -> ast.AST:
@@ -249,7 +353,7 @@ class Target(Node[Literal["target"]]):
 
     @override
     def to_ast(self) -> ast.Name:
-        return ast.Name(id=self.x.text, ctx=ast.Store())
+        return ast.Name(id=self.x.nfkd(), ctx=ast.Store())
 
 
 @dataclass(kw_only=True)
@@ -282,8 +386,60 @@ class AssignmentStmt(Node[Literal["assignment_stmt"]]):
 
 
 @dataclass(kw_only=True)
+class AugTarget(Node[Literal["augtarget"]]):
+    x: Token
+
+    @override
+    def to_ast(self) -> ast.Name:
+        return ast.Name(id=self.x.nfkd(), ctx=ast.Store())
+
+
+@dataclass(kw_only=True)
+class ConditionalExpression(Node[Literal["conditional_expression"]]):
+    then: OrTest
+
+    @override
+    def to_ast(self) -> ast.AST:
+        return self.then.to_ast()
+
+
+@dataclass(kw_only=True)
+class ExpressionList(Node[Literal["expression_list"]]):
+    xs: list[ConditionalExpression]
+
+    @override
+    def to_ast(self) -> ast.AST:
+        return self.xs[0].to_ast()
+
+
+@dataclass(kw_only=True)
+class AugmentedAssignmentStmt(Node[Literal["augmented_assignment_stmt"]]):
+    target: AugTarget
+    op: Token
+    value: ExpressionList
+
+    @override
+    def to_ast(self) -> ast.AST:
+        target = self.target.to_ast()
+
+        match self.op.text:
+            case "+=":
+                op = ast.Add()
+
+            case _:
+                raise NotImplementedError(
+                    f"unknown augmented assignment operator: {self.op.text}"
+                )
+
+        value = self.value.to_ast()
+        assert isinstance(value, ast.expr)
+
+        return ast.AugAssign(target=target, op=op, value=value)
+
+
+@dataclass(kw_only=True)
 class SimpleStmt(Node[Literal["simple_stmt"]]):
-    x: ExpressionStmt | AssignmentStmt
+    x: ExpressionStmt | AssignmentStmt | AugmentedAssignmentStmt
 
     @override
     def to_ast(self) -> ast.AST:
@@ -435,6 +591,9 @@ class Parser:
     def atom(self) -> Atom:
         ident = self.opt("identifier")
         if ident is not None:
+            if ident.text in {"True", "False", "None"}:
+                return Atom(type="atom", x=AstLiteral(type="literal", x=ident))
+
             return Atom(type="atom", x=ident)
 
         return Atom(type="atom", x=self.literal())
@@ -452,8 +611,32 @@ class Parser:
         return UExpr(type="u_expr", x=self.power())
 
     @parse_function
+    def m_expr_base(self) -> MExpr:
+        return MExpr(type="m_expr", lhs=None, op=None, rhs=self.u_expr())
+
+    @parse_function
     def m_expr(self) -> MExpr:
-        return MExpr(type="m_expr", rhs=self.u_expr())
+        lhs = self.m_expr_base()
+
+        while True:
+            try:
+                with self.checkpoint():
+                    _ = self.opt("whitespace")
+
+                    op = self.expect("operator")
+                    if op.text not in {"%", "*"}:
+                        raise ParseFailedError("expected a `m_expr` operator")
+            except ParseFailedError:
+                return lhs
+
+            _ = self.opt("whitespace")
+
+            rhs = self.u_expr()
+
+            lhs = MExpr(type="m_expr", lhs=lhs, op=op, rhs=rhs)
+            lhs.children = self.children
+
+            self.children = [lhs]
 
     @parse_function
     def a_expr_base(self) -> AExpr:
@@ -497,8 +680,55 @@ class Parser:
         return OrExpr(type="or_expr", rhs=self.xor_expr())
 
     @parse_function
+    def comparison(self) -> Comparison:
+        lhs = self.or_expr()
+
+        ops: list[Token] | None = []
+        rhs: list[OrExpr] | None = []
+        while True:
+            try:
+                with self.checkpoint():
+                    _ = self.opt("whitespace")
+                    op = self.expect_op("==")
+                    _ = self.opt("whitespace")
+                    x = self.or_expr()
+
+                ops.append(op)
+                rhs.append(x)
+            except ParseFailedError:
+                if len(ops) == 0:
+                    ops = None
+                    rhs = None
+
+                break
+
+        return Comparison(type="comparison", lhs=lhs, ops=ops, rhs=rhs)
+
+    @parse_function
+    def not_test(self) -> NotTest:
+        return NotTest(type="not_test", x=self.comparison())
+
+    @parse_function
+    def and_test(self) -> AndTest:
+        return AndTest(type="and_test", rhs=self.not_test())
+
+    @parse_function
+    def or_test(self) -> OrTest:
+        return OrTest(type="or_test", rhs=self.and_test())
+
+    @parse_function
     def starred_expression(self) -> StarredExpression:
-        return StarredExpression(type="starred_expression", x=self.or_expr())
+        return StarredExpression(type="starred_expression", x=self.or_test())
+
+    @parse_function
+    def conditional_expression(self) -> ConditionalExpression:
+        return ConditionalExpression(type="conditional_expression", then=self.or_test())
+
+    @parse_function
+    def expression_list(self) -> ExpressionList:
+        return ExpressionList(
+            type="expression_list", xs=[self.conditional_expression()]
+        )
 
     @parse_function
     def target(self) -> Target:
@@ -553,6 +783,27 @@ class Parser:
         )
 
     @parse_function
+    def aug_target(self) -> AugTarget:
+        return AugTarget(type="augtarget", x=self.expect("identifier"))
+
+    @parse_function
+    def augmented_assignment_stmt(self) -> AugmentedAssignmentStmt:
+        target = self.aug_target()
+
+        _ = self.opt("whitespace")
+        op = self.expect("delimiter")
+        if op.text != "+=":
+            raise ParseFailedError("expected an augmented assignment operator")
+
+        _ = self.opt("whitespace")
+        return AugmentedAssignmentStmt(
+            type="augmented_assignment_stmt",
+            target=target,
+            op=op,
+            value=self.expression_list(),
+        )
+
+    @parse_function
     def expression_stmt(self) -> ExpressionStmt:
         return ExpressionStmt(type="expression_stmt", x=self.starred_expression())
 
@@ -562,7 +813,17 @@ class Parser:
             with self.checkpoint():
                 return SimpleStmt(type="simple_stmt", x=self.assignment_stmt())
         except ParseFailedError:
-            return SimpleStmt(type="simple_stmt", x=self.expression_stmt())
+            pass
+
+        try:
+            with self.checkpoint():
+                return SimpleStmt(
+                    type="simple_stmt", x=self.augmented_assignment_stmt()
+                )
+        except ParseFailedError:
+            pass
+
+        return SimpleStmt(type="simple_stmt", x=self.expression_stmt())
 
     @parse_function
     def stmt_list(self) -> StmtList:

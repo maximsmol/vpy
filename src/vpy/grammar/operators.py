@@ -1,29 +1,21 @@
 import regex
 
-operator = r"""
+operators_short = r"[+<\->*&|/^~%@]"
+operator_short_re = regex.compile(operators_short, regex.VERBOSE)
+
+operators_long = r"""
 (
-  \+
-| <<
-| <
-| -
+  <<
 | >>
-| >
-| \*
-| &
 | <=
 | \*\*
-| \|
 | >=
-| /
-| \^
 | ==
 | //
-| ~
 | !=
-| %
 | :=
-| @
 )
 """
 
-operator_re = regex.compile(operator, regex.VERBOSE)
+
+operator_long_re = regex.compile(operators_long, regex.VERBOSE)

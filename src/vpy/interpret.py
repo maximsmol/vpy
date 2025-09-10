@@ -3,14 +3,21 @@ from vpy.lex import Token
 from .parse import (
     AExpr,
     AndExpr,
+    AndTest,
     AssignmentStmt,
     AstLiteral,
     Atom,
+    AugmentedAssignmentStmt,
+    Comparison,
+    ConditionalExpression,
+    ExpressionList,
     ExpressionStmt,
     FileInput,
     MExpr,
     Node,
+    NotTest,
     OrExpr,
+    OrTest,
     Power,
     Primary,
     ShiftExpr,
@@ -28,8 +35,41 @@ class Interpreter:
         self.locals: dict[str, object] = {}
 
     def eval(self, x: Node) -> object:
+        if isinstance(x, ExpressionList):
+            return self.eval(x.xs[0])
+
+        if isinstance(x, ConditionalExpression):
+            return self.eval(x.then)
+
         if isinstance(x, StarredExpression):
             return self.eval(x.x)
+
+        if isinstance(x, OrTest):
+            return self.eval(x.rhs)
+
+        if isinstance(x, AndTest):
+            return self.eval(x.rhs)
+
+        if isinstance(x, NotTest):
+            return self.eval(x.x)
+
+        if isinstance(x, Comparison):
+            lhs = self.eval(x.lhs)
+            if x.ops is None:
+                return lhs
+
+            assert x.rhs is not None
+
+            cur = lhs
+            for op, rhs_node in zip(x.ops, x.rhs, strict=True):
+                rhs = self.eval(rhs_node)
+
+                assert op.text == "=="
+                if cur != rhs:
+                    return False
+                cur = rhs
+
+            return True
 
         if isinstance(x, OrExpr):
             return self.eval(x.rhs)
@@ -47,12 +87,42 @@ class Interpreter:
             if x.lhs is None:
                 return self.eval(x.rhs)
 
-            assert x.op.text == "+"
+            assert x.op is not None
 
-            return self.eval(x.lhs) + self.eval(x.rhs)
+            lhs = self.eval(x.lhs)
+            assert isinstance(lhs, int)
+
+            rhs = self.eval(x.rhs)
+            assert isinstance(rhs, int)
+
+            match x.op.text:
+                case "+":
+                    return lhs + rhs
+
+                case _:
+                    raise NotImplementedError(f"unsupported operator: {x.op.text}")
 
         if isinstance(x, MExpr):
-            return self.eval(x.rhs)
+            if x.lhs is None:
+                return self.eval(x.rhs)
+
+            assert x.op is not None
+
+            lhs = self.eval(x.lhs)
+            assert isinstance(lhs, int)
+
+            rhs = self.eval(x.rhs)
+            assert isinstance(rhs, int)
+
+            match x.op.text:
+                case "%":
+                    return lhs % rhs
+
+                case "*":
+                    return lhs * rhs
+
+                case _:
+                    raise NotImplementedError(f"unsupported operator: {x.op.text}")
 
         if isinstance(x, UExpr):
             return self.eval(x.x)
@@ -71,8 +141,25 @@ class Interpreter:
             return self.eval(x.x)
 
         if isinstance(x, AstLiteral):
-            assert x.x.type == "decinteger"
-            return int(x.x.text)
+            match x.x.type:
+                case "decinteger":
+                    return int(x.x.text)
+
+                case "identifier":
+                    match x.x.text:
+                        case "True":
+                            return True
+                        case "False":
+                            return False
+                        case "None":
+                            return None
+                        case _:
+                            raise NotImplementedError(
+                                f"unknown named literal: {x.x.text}"
+                            )
+
+                case _:
+                    raise NotImplementedError(f"unknown literal token: {x.x}")
 
         raise NotImplementedError(f"unknown node: {x.type}")
 
@@ -109,6 +196,24 @@ class Interpreter:
 
             val = self.eval(x.value)
             self.locals[name.x.nfkd()] = val
+
+            return
+
+        if isinstance(x, AugmentedAssignmentStmt):
+            name = x.target.x.nfkd()
+            cur = self.locals[name]
+            assert isinstance(cur, int)
+
+            val = self.eval(x.value)
+            assert isinstance(val, int)
+
+            match x.op.text:
+                case "+=":
+                    self.locals[name] = cur + val
+                case _:
+                    raise NotImplementedError(
+                        f"unsupported augmented assignment operator: {x.op.text}"
+                    )
 
             return
 

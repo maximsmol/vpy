@@ -35,7 +35,12 @@ def compile_(
 def main() -> None:
     # src = "1 + 2 + 3"
     # src = "a = 123"
-    src = "a = 123\na + 10"
+    # src = "a = 123\na + 10"
+    # src = "10 % 6"
+    # src = "1 == 1"
+    # src = "2 * 5"
+    # src = "a = 1\na += 2"
+    src = "True"
 
     l = Lexer(data=src)
     p = Parser(lex=l)
@@ -71,14 +76,14 @@ def main() -> None:
         eval_(compile_(stmts[:-1]))
         reference = eval_(compile_(stmts[-1].value, mode="eval"))
     else:
-        eval_(src)
+        eval_(compile_(src))
         reference = None
 
     print(ours)
     print("Reference:")
     print(reference)
 
-    if ours != reference:
+    if type(ours) is not type(reference) or ours != reference:
         print("!!! Mismatch")
     else:
         print("Matches")
