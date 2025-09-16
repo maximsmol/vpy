@@ -31,6 +31,7 @@ from .parse import (
     StmtList,
     Suite,
     UExpr,
+    WhileStmt,
     XorExpr,
 )
 
@@ -75,8 +76,19 @@ class Interpreter:
             for op, rhs_node in zip(x.ops, x.rhs, strict=True):
                 rhs = self.eval(rhs_node)
 
-                assert op.text == "=="
-                if cur != rhs:
+                match op.text:
+                    case "==":
+                        cond = cur == rhs
+                    case "<=":
+                        assert isinstance(cur, int)
+                        assert isinstance(rhs, int)
+                        cond = cur <= rhs
+                    case _:
+                        raise RuntimeError(
+                            f"unsupported comparison operator: {op.text}"
+                        )
+
+                if not cond:
                     return False
                 cur = rhs
 
@@ -206,6 +218,13 @@ class Interpreter:
             cond = self.eval(x.cond)
             if cond is True:
                 self.exec(x.then)
+            return
+
+        if isinstance(x, WhileStmt):
+            cond = self.eval(x.cond)
+            while cond:
+                self.exec(x.loop)
+                cond = self.eval(x.cond)
             return
 
         if isinstance(x, SimpleStmt):

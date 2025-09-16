@@ -1,7 +1,7 @@
-from copy import copy
 import re
 from collections.abc import Generator
 from contextlib import contextmanager
+from copy import copy, deepcopy
 from dataclasses import dataclass, field
 
 from vpy.lex import Token
@@ -37,6 +37,7 @@ from .parse import (
     StmtList,
     Suite,
     UExpr,
+    WhileStmt,
     XorExpr,
 )
 
@@ -79,18 +80,24 @@ class Compiler:
         return llvmstr(res)
 
     def emit_block(self, name: str) -> None:
+        self.emit("")
         self.emit(f"{name}:")
         self.cur_block = name
-        self.emit("")
 
     def emit(self, x: str) -> None:
         self.lines.append("  " * self.indent_level + x)
+
+    def emit_unparse(self, x: Node) -> None:
+        self.lines.extend(
+            "  " * self.indent_level + f"; {l}" for l in x.unparse().splitlines()
+        )
 
     def compile_expr(self, x: Node) -> str:
         if isinstance(x, ExpressionList):
             return self.compile_expr(x.xs[0])
 
         if isinstance(x, Expression):
+            self.emit_unparse(x)
             return self.compile_expr(x.x)
 
         if isinstance(x, ConditionalExpression):
@@ -118,7 +125,7 @@ class Compiler:
 
             assert x.rhs is not None
 
-            res = self.next_id(prefix="_compare")
+            res = self.next_id(prefix="_compare.i1")
             self.emit(f"%{res} = bitcast i1 1 to i1")
 
             cur = lhs
@@ -128,15 +135,21 @@ class Compiler:
                 prev_res = res
                 res = self.next_id(prefix="_eq")
 
-                assert op.text == "=="
+                subres = self.next_id(prefix="_compare.subres")
+                match op.text:
+                    case "==":
+                        self.emit(f"%{subres} = icmp eq i64 %{cur}, %{rhs}")
+                    case "<=":
+                        self.emit(f"%{subres} = icmp sle i64 %{cur}, %{rhs}")
+                    case _:
+                        raise RuntimeError(
+                            f"unsupported comparison operator: {op.text}"
+                        )
 
-                subres = self.next_id()
-                self.emit(f"%{subres} = icmp eq i64 %{cur}, %{rhs}")
                 self.emit(f"%{res} = and i1 %{prev_res}, %{subres}")
-
                 cur = rhs
 
-            final_res = self.next_id(prefix="_compare.res")
+            final_res = self.next_id(prefix="_compare.i64")
             self.emit(f"%{final_res} = zext i1 %{res} to i64")
             return final_res
 
@@ -161,7 +174,7 @@ class Compiler:
             lhs = self.compile_expr(x.lhs)
             rhs = self.compile_expr(x.rhs)
 
-            res = self.next_id()
+            res = self.next_id(prefix="_aexpr")
 
             match x.op.text:
                 case "+":
@@ -181,7 +194,7 @@ class Compiler:
             lhs = self.compile_expr(x.lhs)
             rhs = self.compile_expr(x.rhs)
 
-            res = self.next_id()
+            res = self.next_id(prefix="_mexpr")
 
             match x.op.text:
                 case "%":
@@ -212,7 +225,7 @@ class Compiler:
             return self.compile_expr(x.x)
 
         if isinstance(x, AstLiteral):
-            res = self.next_id()
+            res = self.next_id(prefix="_const")
 
             match x.x.type:
                 case "decinteger":
@@ -244,9 +257,7 @@ class Compiler:
             return
 
         if isinstance(x, Statement):
-            self.lines.extend(
-                "  " * self.indent_level + f"; {l}" for l in x.unparse().splitlines()
-            )
+            self.emit_unparse(x)
             self.compile(x.x)
             return
 
@@ -266,6 +277,75 @@ class Compiler:
 
             for s in x.xs:
                 self.compile(s)
+            return
+
+        if isinstance(x, WhileStmt):
+            prev_block = self.cur_block
+            prev_locals = copy(self.locals)
+
+            loop_cond_label = self.next_id(prefix="while.cond")
+            loop_label = self.next_id(prefix="while.loop")
+
+            self.emit(f"br label %{loop_cond_label}")
+
+            lookahead_compiler = deepcopy(self)
+            lookahead_compiler.compile(x.loop)
+            lookahead_locals = lookahead_compiler.locals
+            del lookahead_compiler
+
+            loop_modified_locals: set[str] = set()
+            for k, prev in prev_locals.items():
+                la = lookahead_locals[k]
+                if prev == la:
+                    continue
+
+                loop_modified_locals.add(k)
+
+            loop_end_locals: dict[str, str] = {}
+            for k in loop_modified_locals:
+                loop_end_locals[k] = self.next_id(prefix=f"while.local.{k}")
+
+            # >>> while.cond
+            self.emit_block(loop_cond_label)
+            for k in loop_modified_locals:
+                var = self.next_id(prefix=k)
+
+                prev = prev_locals[k]
+                new = loop_end_locals[k]
+
+                self.emit(
+                    f"%{var} = phi i64 [ %{prev}, %{prev_block} ], [ %{new}, %{loop_label} ]"
+                )
+                self.locals[k] = var
+
+            cond = self.compile_expr(x.cond)
+            cond_i1 = self.next_id(prefix="while.cond.i1")
+            self.emit(f"%{cond_i1} = icmp eq i64 %{cond}, 1")
+
+            end_label = self.next_id(prefix="while.end")
+
+            post_cond_locals = copy(self.locals)
+            self.emit(f"br i1 %{cond_i1}, label %{loop_label}, label %{end_label}")
+
+            # >>> while.loop
+            self.emit_block(loop_label)
+            self.compile(x.loop)
+
+            for k, new in loop_end_locals.items():
+                self.emit(f"%{new} = bitcast i64 %{self.locals[k]} to i64")
+
+            self.emit(f"br label %{loop_cond_label}")
+
+            # >>> while.end
+            self.emit_block(end_label)
+            self.emit("")
+            for k, prev in post_cond_locals.items():
+                new = self.locals[k]
+                if prev == new:
+                    continue
+
+                self.locals[k] = prev
+
             return
 
         if isinstance(x, IfStmt):
@@ -293,11 +373,11 @@ class Compiler:
                     continue
 
                 var = self.next_id(prefix=k)
-                self.locals[k] = var
 
                 self.emit(
-                    f"%{var} = phi i64 [ %{new}, %{then_label} ], [ %{prev}, %{prev_block} ]"
+                    f"%{var} = phi i64 [ %{prev}, %{prev_block} ], [ %{new}, %{then_label} ]"
                 )
+                self.locals[k] = var
 
             self.emit("")
 
@@ -309,7 +389,6 @@ class Compiler:
 
         if isinstance(x, ExpressionStmt):
             res = self.compile_expr(x.x)
-            self.emit("")
             self.emit(f"ret i64 %{res}")
             return
 
@@ -321,12 +400,13 @@ class Compiler:
 
             name = target.xs[0].x.nfkd()
             var = self.next_id(prefix=name)
-            self.locals[name] = var
 
             val = self.compile_expr(x.value)
 
             self.emit(f"%{var} = bitcast i64 %{val} to i64")
             self.emit("")
+            self.locals[name] = var
+
             return
 
         if isinstance(x, AugmentedAssignmentStmt):
@@ -336,7 +416,6 @@ class Compiler:
 
             old = self.locals[name]
             res = self.next_id(prefix=name)
-            self.locals[name] = res
 
             match x.op.text:
                 case "+=":
@@ -347,6 +426,7 @@ class Compiler:
                         f"unsupported augmented assignment operator: {x.op.text}"
                     )
 
+            self.locals[name] = res
             self.emit("")
             return
 

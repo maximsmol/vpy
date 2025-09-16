@@ -294,8 +294,17 @@ class Comparison(Node[Literal["comparison"]]):
             cur = x.to_ast()
             comparators.append(cur)
 
+        def convert_op(x: Token) -> ast.Eq | ast.LtE:
+            match x.text:
+                case "==":
+                    return ast.Eq()
+                case "<=":
+                    return ast.LtE()
+                case _:
+                    raise RuntimeError(f"unsupported comparison operator: {x.text}")
+
         return ast.Compare(
-            left=left, ops=[ast.Eq()] * len(self.ops), comparators=comparators
+            left=left, ops=[convert_op(x) for x in self.ops], comparators=comparators
         )
 
 
@@ -482,8 +491,18 @@ class IfStmt(Node[Literal["if_stmt"]]):
 
 
 @dataclass(kw_only=True)
+class WhileStmt(Node[Literal["while_stmt"]]):
+    cond: AssignmentExpression
+    loop: "Suite"
+
+    @override
+    def to_ast(self) -> ast.While:
+        return ast.While(test=self.cond.to_ast(), body=[self.loop.to_ast()])
+
+
+@dataclass(kw_only=True)
 class CompoundStmt(Node[Literal["compound_stmt"]]):
-    x: IfStmt
+    x: IfStmt | WhileStmt
 
     @override
     def to_ast(self) -> ast.stmt:
@@ -748,7 +767,13 @@ class Parser:
             try:
                 with self.checkpoint():
                     _ = self.opt("whitespace")
-                    op = self.expect_operator("==")
+                    op = self.expect("operator")
+
+                    if op.text not in {"==", "<="}:
+                        raise ParseFailedError(
+                            f"expected a comparison operator, found <operator {op.text}>"
+                        )
+
                     _ = self.opt("whitespace")
                     x = self.or_expr()
 
@@ -860,7 +885,9 @@ class Parser:
         _ = self.opt("whitespace")
         op = self.expect("delimiter")
         if op.text not in {"+="}:
-            raise ParseFailedError("expected an augmented assignment operator")
+            raise ParseFailedError(
+                f"expected an augmented assignment operator, found <delimiter {op.text}>"
+            )
 
         _ = self.opt("whitespace")
         return AugmentedAssignmentStmt(
@@ -909,8 +936,26 @@ class Parser:
         return IfStmt(type="if_stmt", cond=cond, then=then)
 
     @parse_function
+    def while_stmt(self) -> WhileStmt:
+        _ = self.expect_identifier("while")
+        _ = self.opt("whitespace")
+        cond = self.assignment_expression()
+        _ = self.opt("whitespace")
+        _ = self.expect_delimiter(":")
+        _ = self.opt("whitespace")
+        loop = self.suite()
+
+        return WhileStmt(type="while_stmt", cond=cond, loop=loop)
+
+    @parse_function
     def compound_stmt(self) -> CompoundStmt:
-        return CompoundStmt(type="compound_stmt", x=self.if_stmt())
+        try:
+            with self.checkpoint():
+                return CompoundStmt(type="compound_stmt", x=self.if_stmt())
+        except ParseFailedError:
+            pass
+
+        return CompoundStmt(type="compound_stmt", x=self.while_stmt())
 
     @parse_function
     def statement(self) -> Statement:

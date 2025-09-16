@@ -46,7 +46,8 @@ def main() -> None:
     # src = "2 * 5"
     # src = "a = 1\na += 2\na"
     # src = "True"
-    src = "a = 10\nif False:\n    a = 20\na"
+    # src = "a = 10\nif False:\n    a = 20\na"
+    src = "a = 2\nwhile a <= 10:\n    a = a * a\na"
 
     l = Lexer(data=src)
     p = Parser(lex=l)
