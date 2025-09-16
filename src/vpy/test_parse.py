@@ -65,7 +65,7 @@ def main() -> None:
         assert process("2 * 5")
         assert process("a = 1\na += 2")
         assert process("True")
-        assert process("a = 10\nif False:\na = 20\na")
+        assert process("a = 10\nif False:\n    a = 20\na")
 
         print("Smoketest OK")
 

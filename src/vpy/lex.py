@@ -140,7 +140,7 @@ class Lexer:
             self.token_stack.append(endmarker)
 
             while len(self.indentation_stack) > 1:
-                self.indentation_stack.pop()
+                _ = self.indentation_stack.pop()
                 self.token_stack.append(
                     Token(
                         type="dedent", start=copy(self.pos), end=copy(self.pos), text=""
@@ -166,39 +166,45 @@ class Lexer:
             else:
                 self.pos.col += len(match_str)
 
+            end = copy(self.pos)
+
             start_of_line = start.col == 1
             self.last_was_newline = t == "newline"
 
+            cur = Token(type=t, start=start, end=end, text=match_str)
+
             if start_of_line:
-                if t == "newline":
-                    t = "nl"
+                if cur.type == "newline":
+                    cur.type = "nl"
                 else:
                     cur_level = self.indentation_stack[-1]
-                    level = len(match_str) if t == "whitespace" else 0
+                    level = len(match_str) if cur.type == "whitespace" else 0
 
                     if level == cur_level:
                         pass
                     elif level > cur_level:
                         self.indentation_stack.append(level)
-                        t = "indent"
+                        cur.type = "indent"
                     else:
                         assert level in self.indentation_stack
 
+                        pos = start
+                        if cur.type == "whitespace":
+                            pos = end
+
                         dedent = Token(
-                            type="dedent",
-                            start=copy(self.pos),
-                            end=copy(self.pos),
-                            text="",
+                            type="dedent", start=copy(pos), end=copy(pos), text=""
                         )
 
-                        lookahead = self.lex_more()
-                        if lookahead.type != "newline":
-                            self.token_stack.append(lookahead)
-                            while self.indentation_stack[-1] != level:
-                                self.token_stack.append(dedent)
-                                _ = self.indentation_stack.pop()
+                        self.token_stack.append(cur)
 
-            return Token(type=t, start=start, end=copy(self.pos), text=match_str)
+                        while self.indentation_stack[-1] != level:
+                            self.token_stack.append(dedent)
+                            _ = self.indentation_stack.pop()
+
+                        return self.token_stack.pop()
+
+            return cur
 
         e = RuntimeError(f"unknown token at {self.pos}")
         l, cursor = self.debug_pos(idx=self.pos.idx + 1)

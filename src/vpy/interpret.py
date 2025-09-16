@@ -4,15 +4,19 @@ from .parse import (
     AExpr,
     AndExpr,
     AndTest,
+    AssignmentExpression,
     AssignmentStmt,
     AstLiteral,
     Atom,
     AugmentedAssignmentStmt,
     Comparison,
+    CompoundStmt,
     ConditionalExpression,
+    Expression,
     ExpressionList,
     ExpressionStmt,
     FileInput,
+    IfStmt,
     MExpr,
     Node,
     NotTest,
@@ -25,6 +29,7 @@ from .parse import (
     StarredExpression,
     Statement,
     StmtList,
+    Suite,
     UExpr,
     XorExpr,
 )
@@ -38,8 +43,14 @@ class Interpreter:
         if isinstance(x, ExpressionList):
             return self.eval(x.xs[0])
 
+        if isinstance(x, Expression):
+            return self.eval(x.x)
+
         if isinstance(x, ConditionalExpression):
             return self.eval(x.then)
+
+        if isinstance(x, AssignmentExpression):
+            return self.eval(x.value)
 
         if isinstance(x, StarredExpression):
             return self.eval(x.x)
@@ -173,9 +184,28 @@ class Interpreter:
             self.exec(x.x)
             return
 
+        if isinstance(x, CompoundStmt):
+            self.exec(x.x)
+            return
+
         if isinstance(x, StmtList):
             for s in x.xs:
                 self.exec(s)
+            return
+
+        if isinstance(x, Suite):
+            if isinstance(x.xs, StmtList):
+                self.exec(x.xs)
+                return
+
+            for s in x.xs:
+                self.exec(s)
+            return
+
+        if isinstance(x, IfStmt):
+            cond = self.eval(x.cond)
+            if cond is True:
+                self.exec(x.then)
             return
 
         if isinstance(x, SimpleStmt):

@@ -1,65 +1,48 @@
-from ctypes import CFUNCTYPE, c_int64
+from argparse import ArgumentParser
+from codecs import escape_decode
+from io import StringIO
+from tokenize import generate_tokens
 
-import llvmlite.binding as llvm
-
-from vpy.compile import Compiler
-from vpy.interpret import Interpreter
-
-from .lex import Lexer
-from .parse import Parser
-
-
-def execute(engine: llvm.ExecutionEngine, code: str) -> int:
-    mod = llvm.parse_assembly(code)
-    mod.verify()
-
-    engine.add_module(mod)
-    try:
-        engine.finalize_object()
-        engine.run_static_constructors()
-
-        func_ptr = engine.get_function_address("test")
-        cfunc = CFUNCTYPE(c_int64)(func_ptr)
-        return cfunc()
-    finally:
-        engine.remove_module(mod)
+from vpy.lex import Lexer
+from vpy.parse import Parser
 
 
 def main() -> None:
-    llvm.initialize()
-    llvm.initialize_native_target()
-    llvm.initialize_native_asmprinter()
+    argp = ArgumentParser()
+    _ = argp.add_argument("source")
 
-    target = llvm.Target.from_default_triple()
-    target_machine = target.create_target_machine()
+    subp = argp.add_subparsers(dest="command", required=True)
 
-    backing_mod = llvm.parse_assembly("")
-    engine = llvm.create_mcjit_compiler(backing_mod, target_machine)
+    lexp = subp.add_parser("lex")
+    _ = lexp.add_argument("--reference", action="store_true")
 
-    src = "1 + 2 + 3"
+    parsep = subp.add_parser("parse")
 
-    l = Lexer(data=src)
-    p = Parser(lex=l)
-    ast = p.parse()
+    args = argp.parse_args()
 
-    c = Compiler()
-    c.compile(ast)
+    assert isinstance(args.source, str)
+    source = escape_decode(args.source)[0].decode()
 
-    llvm_ir = "\n".join(c.lines)
-    print(llvm_ir)
+    match args.command:
+        case "lex":
+            if args.reference:
+                io = StringIO(source)
+                for x in generate_tokens(io.readline):
+                    print(x)
 
-    res = execute(engine, llvm_ir)
+                return
 
-    print()
-    print("test() =", res)
+            l = Lexer(data=source)
+            while True:
+                x = l.next()
+                print(x)
 
-    cur = p.tok()
-    if cur.type != "endmarker":
-        print()
-        print("!!! Leftover tokens:")
-        while cur.type != "endmarker":
-            print(cur)
-            cur = p.tok()
+                if x.type == "endmarker":
+                    break
+
+        case "parse":
+            p = Parser(lex=Lexer(data=source))
+            print(p.parse())
 
 
 if __name__ == "__main__":
