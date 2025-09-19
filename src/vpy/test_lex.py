@@ -1,4 +1,5 @@
 import difflib
+from textwrap import dedent
 import tokenize
 from io import StringIO
 from pathlib import Path
@@ -59,14 +60,46 @@ def main() -> None:
         assert process("1 + 2")
         assert process("1 + 2 + 3")
         assert process("a = 123")
-        assert process("a = 123\na + 1")
+        assert process(
+            dedent("""
+                a = 123
+                a + 1
+            """)[1:]
+        )
         assert process("10 % 6")
         assert process("1 == 1")
         assert process("2 * 5")
-        assert process("a = 1\na += 2")
+        assert process(
+            dedent("""
+                a = 1
+                a += 2
+            """)[1:]
+        )
         assert process("True")
-        assert process("a = 10\nif False:\n    a = 20\na")
-        assert process("a = 2\nwhile a <= 10:\n    a = a * a\na")
+        assert process(
+            dedent("""
+                a = 10
+                if False:
+                    a = 20
+                a
+            """)[1:]
+        )
+        assert process(
+            dedent("""
+                a = 2
+                while a <= 10:
+                    a = a * a
+                a
+            """)[1:]
+        )
+        assert process(
+            dedent("""
+                def f(x: int) -> int:
+                    return x + 10
+
+                f(10)
+            """)[1:]
+        )
 
         print("Smoketest OK")
 
@@ -77,6 +110,7 @@ def main() -> None:
         ok = process(f.read_text())
         if not ok:
             break
+        print("  OK")
 
     return
 

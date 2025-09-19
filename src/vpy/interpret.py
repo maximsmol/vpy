@@ -1,3 +1,6 @@
+from dataclasses import dataclass, field
+from typing import Self, override
+
 from vpy.lex import Token
 
 from .parse import (
@@ -9,6 +12,7 @@ from .parse import (
     AstLiteral,
     Atom,
     AugmentedAssignmentStmt,
+    Call,
     Comparison,
     CompoundStmt,
     ConditionalExpression,
@@ -16,6 +20,7 @@ from .parse import (
     ExpressionList,
     ExpressionStmt,
     FileInput,
+    Funcdef,
     IfStmt,
     MExpr,
     Node,
@@ -24,6 +29,7 @@ from .parse import (
     OrTest,
     Power,
     Primary,
+    ReturnStmt,
     ShiftExpr,
     SimpleStmt,
     StarredExpression,
@@ -36,9 +42,30 @@ from .parse import (
 )
 
 
-class Interpreter:
-    def __init__(self) -> None:
-        self.locals: dict[str, object] = {}
+class FunctionReturn(Exception):  # noqa: N818
+    def __init__(self, value: object | None) -> None:
+        super().__init__(self)
+        self.value: object = value
+
+
+@dataclass(kw_only=True)
+class Function:
+    data: Funcdef
+
+    @override
+    def __repr__(self) -> str:
+        return f"<function {self.data.name.nfkd()}>"
+
+
+@dataclass(kw_only=True)
+class Scope:
+    locals: dict[str, object] = field(default_factory=dict)
+
+    def resolve(self, x: str) -> object:
+        if x not in self.locals:
+            raise RuntimeError(f"variable not defined: {x}")
+
+        return self.locals[x]
 
     def eval(self, x: Node) -> object:
         if isinstance(x, ExpressionList):
@@ -156,10 +183,29 @@ class Interpreter:
         if isinstance(x, Primary):
             return self.eval(x.x)
 
+        if isinstance(x, Call):
+            func = self.eval(x.func)
+            assert isinstance(func, Function)
+
+            param_spec = func.data.params
+            if len(x.positional_args) != len(param_spec.regular_params):
+                raise RuntimeError("wrong parameter count")
+
+            func_scope = Scope()
+            for k, v in zip(param_spec.regular_params, x.positional_args, strict=True):
+                func_scope.locals[k.name.nfkd()] = self.eval(v)
+
+            try:
+                func_scope.exec(func.data.body)
+            except FunctionReturn as e:
+                return e.value
+
+            return None
+
         if isinstance(x, Atom):
             if isinstance(x.x, Token):
                 assert x.x.type == "identifier"
-                return self.locals[x.x.nfkd()]
+                return self.resolve(x.x.nfkd())
 
             return self.eval(x.x)
 
@@ -227,6 +273,10 @@ class Interpreter:
                 cond = self.eval(x.cond)
             return
 
+        if isinstance(x, Funcdef):
+            self.locals[x.name.nfkd()] = Function(data=x)
+            return
+
         if isinstance(x, SimpleStmt):
             self.exec(x.x)
             return
@@ -265,5 +315,11 @@ class Interpreter:
                     )
 
             return
+
+        if isinstance(x, ReturnStmt):
+            value: object = None
+            if x.value is not None:
+                value = self.eval(x.value)
+            raise FunctionReturn(value)
 
         raise NotImplementedError(f"unknown node: {x.type}")

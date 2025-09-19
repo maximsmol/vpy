@@ -1,11 +1,17 @@
 from ctypes import CFUNCTYPE, c_int64
+from textwrap import dedent
 
-import llvmlite.binding as llvm
+import llvmlite
 
-from vpy.compile import Compiler
+from vpy.compile import Compiler, Scope
 
 from .lex import Lexer
 from .parse import Parser
+
+# https://llvmlite.readthedocs.io/en/stable/user-guide/deprecation.html#deprecation-of-typed-pointers
+llvmlite.opaque_pointers_enabled = True
+
+import llvmlite.binding as llvm
 
 
 def setup_llvm() -> llvm.ExecutionEngine:
@@ -29,7 +35,7 @@ def execute(engine: llvm.ExecutionEngine, code: str) -> int:
         engine.finalize_object()
         engine.run_static_constructors()
 
-        func_ptr = engine.get_function_address("test")
+        func_ptr = engine.get_function_address("module_root")
         cfunc = CFUNCTYPE(c_int64)(func_ptr)
         return cfunc()
     finally:
@@ -40,29 +46,56 @@ def main() -> None:
     engine = setup_llvm()
 
     # src = "1 + 2 + 3"
-    # src = "a = 123\na + 10"
+    # src = "a = 123"
+    # src = dedent("""
+    #     a = 123
+    #     a + 1
+    # """)[1:]
     # src = "10 % 6"
     # src = "1 == 1"
     # src = "2 * 5"
-    # src = "a = 1\na += 2\na"
+    # src = dedent("""
+    #     a = 1
+    #     a += 2
+    # """)[1:]
     # src = "True"
-    # src = "a = 10\nif False:\n    a = 20\na"
-    src = "a = 2\nwhile a <= 10:\n    a = a * a\na"
+    # src = dedent("""
+    #     a = 10
+    #     if False:
+    #         a = 20
+    #     a
+    # """)[1:]
+    # src = dedent("""
+    #     a = 2
+    #     while a <= 10:
+    #         a = a * a
+    #     a
+    # """)[1:]
+    src = dedent("""
+        def f(x: int) -> int:
+            return x + 10
+
+        f(10)
+    """)[1:]
 
     l = Lexer(data=src)
     p = Parser(lex=l)
     ast = p.parse()
 
     c = Compiler()
-    c.compile(ast)
 
-    llvm_ir = "\n".join(c.lines)
+    root = Scope(compiler=c)
+    c.scopes.append(root)
+
+    root.compile(ast)
+
+    llvm_ir = "\n\n".join("\n".join(s.lines) for s in c.scopes)
     print(llvm_ir)
 
     res = execute(engine, llvm_ir)
 
     print()
-    print("test() =", res)
+    print("module_root() =", res)
 
     cur = p.tok()
     if cur.type != "endmarker":

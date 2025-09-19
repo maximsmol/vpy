@@ -73,6 +73,10 @@ class Node(Generic[T_co]):
     def __str__(self) -> str:
         return self.to_str()
 
+    @override
+    def __repr__(self) -> str:
+        return self.to_str()
+
     def unparse(self, *, parens: bool = False) -> str:
         res: list[str] = []
 
@@ -132,8 +136,20 @@ class Atom(Node[Literal["atom"]]):
 
 
 @dataclass(kw_only=True)
+class Call(Node[Literal["call"]]):
+    func: "Primary"
+    positional_args: "list[AssignmentExpression]"
+
+    @override
+    def to_ast(self) -> ast.Call:
+        return ast.Call(
+            func=self.func.to_ast(), args=[x.to_ast() for x in self.positional_args]
+        )
+
+
+@dataclass(kw_only=True)
 class Primary(Node[Literal["primary"]]):
-    x: Atom
+    x: Atom | Call
 
     @override
     def to_ast(self) -> ast.expr:
@@ -432,7 +448,7 @@ class ExpressionList(Node[Literal["expression_list"]]):
     xs: list[Expression]
 
     @override
-    def to_ast(self) -> ast.AST:
+    def to_ast(self) -> ast.expr:
         return self.xs[0].to_ast()
 
 
@@ -462,8 +478,17 @@ class AugmentedAssignmentStmt(Node[Literal["augmented_assignment_stmt"]]):
 
 
 @dataclass(kw_only=True)
+class ReturnStmt(Node[Literal["return_stmt"]]):
+    value: ExpressionList | None
+
+    @override
+    def to_ast(self) -> ast.Return:
+        return ast.Return(value=self.value.to_ast() if self.value is not None else None)
+
+
+@dataclass(kw_only=True)
 class SimpleStmt(Node[Literal["simple_stmt"]]):
-    x: ExpressionStmt | AssignmentStmt | AugmentedAssignmentStmt
+    x: ExpressionStmt | AssignmentStmt | AugmentedAssignmentStmt | ReturnStmt
 
     @override
     def to_ast(self) -> ast.stmt:
@@ -501,8 +526,51 @@ class WhileStmt(Node[Literal["while_stmt"]]):
 
 
 @dataclass(kw_only=True)
+class Defparameter(Node[Literal["defparameter"]]):
+    name: Token
+    annotation: Expression | None
+
+    @override
+    def to_ast(self) -> ast.arg:
+        return ast.arg(
+            arg=self.name.nfkd(),
+            annotation=self.annotation.to_ast()
+            if self.annotation is not None
+            else None,
+        )
+
+
+@dataclass(kw_only=True)
+class ParameterList(Node[Literal["parameter_list"]]):
+    regular_params: list[Defparameter]
+
+    @override
+    def to_ast(self) -> ast.arguments:
+        return ast.arguments(args=[x.to_ast() for x in self.regular_params])
+
+
+@dataclass(kw_only=True)
+class Funcdef(Node[Literal["funcdef"]]):
+    name: Token
+    params: ParameterList
+    return_value: Expression | None
+    body: "Suite"
+
+    @override
+    def to_ast(self) -> ast.FunctionDef:
+        return ast.FunctionDef(
+            name=self.name.nfkd(),
+            args=self.params.to_ast(),
+            body=[self.body.to_ast()],
+            returns=self.return_value.to_ast()
+            if self.return_value is not None
+            else None,
+        )
+
+
+@dataclass(kw_only=True)
 class CompoundStmt(Node[Literal["compound_stmt"]]):
-    x: IfStmt | WhileStmt
+    x: IfStmt | WhileStmt | Funcdef
 
     @override
     def to_ast(self) -> ast.stmt:
@@ -678,7 +746,41 @@ class Parser:
 
     @parse_function
     def primary(self) -> Primary:
-        return Primary(type="primary", x=self.atom())
+        res = Primary(type="primary", x=self.atom())
+
+        while True:
+            try:
+                with self.checkpoint():
+                    _ = self.opt("whitespace")
+                    _ = self.expect_delimiter("(")
+                    _ = self.opt("whitespace")
+
+                    positional_args: list[AssignmentExpression] = []
+                    try:
+                        positional_args.append(self.assignment_expression())
+
+                        while True:
+                            try:
+                                with self.checkpoint():
+                                    _ = self.opt("whitespace")
+                                    _ = self.expect_delimiter(",")
+                                    _ = self.opt("whitespace")
+                                    positional_args.append(self.assignment_expression())
+                            except ParseFailedError:
+                                break
+                    except ParseFailedError:
+                        pass
+
+                    _ = self.expect_delimiter(")")
+
+                    res = Primary(
+                        type="primary",
+                        x=Call(type="call", func=res, positional_args=positional_args),
+                    )
+            except ParseFailedError:
+                break
+
+        return res
 
     @parse_function
     def power(self) -> Power:
@@ -902,10 +1004,30 @@ class Parser:
         return ExpressionStmt(type="expression_stmt", x=self.starred_expression())
 
     @parse_function
+    def return_stmt(self) -> ReturnStmt:
+        _ = self.expect_identifier("return")
+
+        value: ExpressionList | None = None
+        try:
+            with self.checkpoint():
+                _ = self.opt("whitespace")
+                value = self.expression_list()
+        except ParseFailedError:
+            pass
+
+        return ReturnStmt(type="return_stmt", value=value)
+
+    @parse_function
     def simple_stmt(self) -> SimpleStmt:
         try:
             with self.checkpoint():
                 return SimpleStmt(type="simple_stmt", x=self.assignment_stmt())
+        except ParseFailedError:
+            pass
+
+        try:
+            with self.checkpoint():
+                return SimpleStmt(type="simple_stmt", x=self.return_stmt())
         except ParseFailedError:
             pass
 
@@ -917,6 +1039,8 @@ class Parser:
         except ParseFailedError:
             pass
 
+        # note(maximsmol): must be after all the statements containing keywords
+        # or it will parse the keyword as an identifier
         return SimpleStmt(type="simple_stmt", x=self.expression_stmt())
 
     @parse_function
@@ -948,6 +1072,80 @@ class Parser:
         return WhileStmt(type="while_stmt", cond=cond, loop=loop)
 
     @parse_function
+    def defparameter(self) -> Defparameter:
+        name = self.expect("identifier")
+
+        annotation = None
+        try:
+            with self.checkpoint():
+                _ = self.opt("whitespace")
+                _ = self.expect_delimiter(":")
+                _ = self.opt("whitespace")
+                annotation = self.expression()
+        except ParseFailedError:
+            ...
+
+        return Defparameter(type="defparameter", name=name, annotation=annotation)
+
+    @parse_function
+    def parameter_list(self) -> ParameterList:
+        regular_params: list[Defparameter] = []
+
+        try:
+            with self.checkpoint():
+                regular_params.append(self.defparameter())
+
+            while True:
+                try:
+                    with self.checkpoint():
+                        _ = self.opt("whitespace")
+                        _ = self.expect_delimiter(",")
+                        _ = self.opt("whitespace")
+                        regular_params.append(self.defparameter())
+                except ParseFailedError:
+                    break
+
+        except ParseFailedError:
+            ...
+
+        return ParameterList(type="parameter_list", regular_params=regular_params)
+
+    @parse_function
+    def funcdef(self) -> Funcdef:
+        _ = self.expect_identifier("def")
+        _ = self.opt("whitespace")
+        name = self.expect("identifier")
+        _ = self.opt("whitespace")
+        _ = self.expect_delimiter("(")
+        _ = self.opt("whitespace")
+        params = self.parameter_list()
+        _ = self.opt("whitespace")
+        _ = self.expect_delimiter(")")
+        _ = self.opt("whitespace")
+
+        return_value: Expression | None = None
+        try:
+            with self.checkpoint():
+                _ = self.expect_delimiter("->")
+                _ = self.opt("whitespace")
+                return_value = self.expression()
+                _ = self.opt("whitespace")
+        except ParseFailedError:
+            ...
+
+        _ = self.expect_delimiter(":")
+        _ = self.opt("whitespace")
+        body = self.suite()
+
+        return Funcdef(
+            type="funcdef",
+            name=name,
+            params=params,
+            return_value=return_value,
+            body=body,
+        )
+
+    @parse_function
     def compound_stmt(self) -> CompoundStmt:
         try:
             with self.checkpoint():
@@ -955,7 +1153,13 @@ class Parser:
         except ParseFailedError:
             pass
 
-        return CompoundStmt(type="compound_stmt", x=self.while_stmt())
+        try:
+            with self.checkpoint():
+                return CompoundStmt(type="compound_stmt", x=self.while_stmt())
+        except ParseFailedError:
+            pass
+
+        return CompoundStmt(type="compound_stmt", x=self.funcdef())
 
     @parse_function
     def statement(self) -> Statement:
@@ -993,6 +1197,10 @@ class Parser:
         if len(xs) == 0:
             raise ParseFailedError("expected at least one statement")
 
+        while True:
+            nl = self.opt("nl")
+            if nl is None:
+                break
         _ = self.expect("dedent")
 
         return Suite(type="suite", xs=xs)

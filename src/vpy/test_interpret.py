@@ -1,8 +1,9 @@
 import ast
+from textwrap import dedent
 from types import CodeType
 from typing import Any, Literal, overload
 
-from vpy.interpret import Interpreter
+from vpy.interpret import Scope
 
 from .lex import Lexer
 from .parse import ExpressionStmt, FileInput, Parser, Statement
@@ -35,14 +36,36 @@ def compile_(
 def main() -> None:
     # src = "1 + 2 + 3"
     # src = "a = 123"
-    # src = "a = 123\na + 10"
+    # src = dedent("""
+    #     a = 123
+    #     a + 1
+    # """)[1:]
     # src = "10 % 6"
     # src = "1 == 1"
     # src = "2 * 5"
-    # src = "a = 1\na += 2"
+    # src = dedent("""
+    #     a = 1
+    #     a += 2
+    # """)[1:]
     # src = "True"
-    # src = "a = 10\nif False:\n    a = 20\na"
-    src = "a = 2\nwhile a <= 10:\n    a = a * a\na"
+    # src = dedent("""
+    #     a = 10
+    #     if False:
+    #         a = 20
+    #     a
+    # """)[1:]
+    # src = dedent("""
+    #     a = 2
+    #     while a <= 10:
+    #         a = a * a
+    #     a
+    # """)[1:]
+    src = dedent("""
+        def f(x: int) -> int:
+            return x + 10
+
+        f(10)
+    """)[1:]
 
     l = Lexer(data=src)
     p = Parser(lex=l)
@@ -51,7 +74,7 @@ def main() -> None:
 
     print()
     print("Evaluated:")
-    i = Interpreter()
+    i = Scope()
 
     assert isinstance(ast_ours, FileInput)
 

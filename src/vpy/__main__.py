@@ -1,6 +1,7 @@
 from argparse import ArgumentParser
 from codecs import escape_decode
 from io import StringIO
+from pathlib import Path
 from tokenize import generate_tokens
 
 from vpy.lex import Lexer
@@ -10,6 +11,7 @@ from vpy.parse import Parser
 def main() -> None:
     argp = ArgumentParser()
     _ = argp.add_argument("source")
+    _ = argp.add_argument("--file", action="store_true")
 
     subp = argp.add_subparsers(dest="command", required=True)
 
@@ -21,7 +23,10 @@ def main() -> None:
     args = argp.parse_args()
 
     assert isinstance(args.source, str)
-    source = escape_decode(args.source)[0].decode()
+    if args.file:
+        source = Path(args.source).read_text(encoding="utf-8")
+    else:
+        source = escape_decode(args.source)[0].decode()
 
     match args.command:
         case "lex":

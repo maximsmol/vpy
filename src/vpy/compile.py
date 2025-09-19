@@ -15,6 +15,7 @@ from .parse import (
     AstLiteral,
     Atom,
     AugmentedAssignmentStmt,
+    Call,
     Comparison,
     CompoundStmt,
     ConditionalExpression,
@@ -22,6 +23,7 @@ from .parse import (
     ExpressionList,
     ExpressionStmt,
     FileInput,
+    Funcdef,
     IfStmt,
     MExpr,
     Node,
@@ -30,6 +32,7 @@ from .parse import (
     OrTest,
     Power,
     Primary,
+    ReturnStmt,
     ShiftExpr,
     SimpleStmt,
     StarredExpression,
@@ -49,8 +52,20 @@ def llvmstr(x: str) -> str:
     return f'"{x}"'
 
 
-@dataclass
-class Compiler:
+def llvmid(prefix: str, idx: int) -> str:
+    # note: we deliberately do not use unnamed variables (and use `.{idx}` instead)
+    # since otherwise we have to emit them exactly in order or llvm rejects the program
+    res = f"{prefix}.{idx}"
+
+    if llvm_id_re.match(res) is not None:
+        return res
+
+    return llvmstr(res)
+
+
+@dataclass(kw_only=True)
+class Scope:
+    compiler: "Compiler"
     var_idx: int = 1
     indent_level: int = 0
     lines: list[str] = field(default_factory=list)
@@ -70,14 +85,7 @@ class Compiler:
         idx = self.var_idx
         self.var_idx += 1
 
-        # note: we deliberately do not use unnamed variables (and use `.{idx}` instead)
-        # since otherwise we have to emit them exactly in order or llvm rejects the program
-        res = f"{prefix}.{idx}"
-
-        if llvm_id_re.match(res) is not None:
-            return res
-
-        return llvmstr(res)
+        return llvmid(prefix, idx)
 
     def emit_block(self, name: str) -> None:
         self.emit("")
@@ -217,6 +225,28 @@ class Compiler:
         if isinstance(x, Primary):
             return self.compile_expr(x.x)
 
+        if isinstance(x, Call):
+            f = self.compile_expr(x.func)
+
+            params = x.positional_args
+
+            args = self.next_id(prefix="call.args")
+            self.emit(f"%{args} = alloca i64, i64 {len(params)}")
+
+            for idx, param in enumerate(params):
+                param_var = self.compile_expr(param)
+
+                offset = self.next_id(prefix=f"call.args.{idx}")
+                self.emit(f"%{offset} = getelementptr i64, ptr %{args}, i64 {idx}")
+                self.emit(f"store i64 %{param_var}, i64* %{offset}")
+
+            self.emit("")
+
+            res = self.next_id(prefix="call.res")
+            self.emit(f"%{res} = call i64 %{f}(i64* %{args})")
+
+            return res
+
         if isinstance(x, Atom):
             if isinstance(x.x, Token):
                 assert x.x.type == "identifier"
@@ -246,9 +276,29 @@ class Compiler:
 
         raise NotImplementedError(f"unknown node: {x.type}")
 
+    def compile_func_body(self, x: Funcdef, *, name: str) -> None:
+        self.emit(f"define i64 @{name}(ptr %args) {{")
+        with self.indent():
+            self.emit("start:")
+
+            params = x.params.regular_params
+            for idx, param in enumerate(params):
+                name = param.name.nfkd()
+
+                var = self.next_id(prefix=name)
+                offset = self.next_id(prefix=f"arg.offset.{name}")
+
+                self.emit(f"%{offset} = getelementptr i64, ptr %args, i64 {idx}")
+                self.emit(f"%{var} = load i64, ptr %{offset}")
+
+                self.locals[name] = var
+
+            self.compile(x.body)
+        self.emit("}")
+
     def compile(self, x: Node) -> None:
         if isinstance(x, FileInput):
-            self.emit("define i64 @test() {")
+            self.emit("define i64 @module_root() {")
             with self.indent():
                 self.emit("start:")
                 for s in x.xs:
@@ -348,6 +398,21 @@ class Compiler:
 
             return
 
+        if isinstance(x, Funcdef):
+            name = x.name.nfkd()
+            scope_id = self.compiler.next_scope_id(prefix=name)
+
+            fn_scope = Scope(compiler=self.compiler)
+            self.compiler.scopes.append(fn_scope)
+
+            fn_scope.compile_func_body(x, name=scope_id)
+
+            var = self.next_id(prefix=name)
+            self.emit(f"%{var} = bitcast ptr @{scope_id} to ptr")
+            self.locals[x.name.nfkd()] = var
+
+            return
+
         if isinstance(x, IfStmt):
             prev_block = self.cur_block
             prev_locals = copy(self.locals)
@@ -430,4 +495,25 @@ class Compiler:
             self.emit("")
             return
 
+        if isinstance(x, ReturnStmt):
+            if x.value is None:
+                self.emit("ret void")
+                return
+
+            val = self.compile_expr(x.value)
+            self.emit(f"ret i64 %{val}")
+            return
+
         raise NotImplementedError(f"unknown node: {x.type}")
+
+
+@dataclass
+class Compiler:
+    scopes: list[Scope] = field(default_factory=list)
+    scope_idx: int = 0
+
+    def next_scope_id(self, *, prefix: str = "") -> str:
+        idx = self.scope_idx
+        self.scope_idx += 1
+
+        return llvmid(prefix, idx)
