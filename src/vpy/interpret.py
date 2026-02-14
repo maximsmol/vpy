@@ -1,5 +1,6 @@
+import struct
 from dataclasses import dataclass, field
-from typing import Self, override
+from typing import Any, Literal, Self, override
 
 from vpy.lex import Token
 
@@ -42,10 +43,74 @@ from .parse import (
 )
 
 
+@dataclass(kw_only=True)
+class Value:
+    type_id: Literal["None", "int", "bool", "float", "function"]
+    _value: bytes
+
+    # from_*
+    @classmethod
+    def from_none(cls) -> Self:
+        return cls(type_id="None", _value=b"")
+
+    @classmethod
+    def from_int(cls, x: int) -> Self:
+        return cls(type_id="int", _value=x.to_bytes())
+
+    @classmethod
+    def from_bool(cls, x: bool) -> Self:  # noqa: FBT001
+        return cls(type_id="bool", _value=bytes([1 if x else 0]))
+
+    @classmethod
+    def from_float(cls, x: float) -> Self:
+        return cls(type_id="float", _value=struct.pack("d", x))
+
+    @classmethod
+    def from_function(cls, name: str) -> Self:
+        return cls(type_id="function", _value=name.encode())
+
+    # expect_*
+    def expect_none(self) -> None:
+        assert self.type_id == "None"
+
+    def expect_int(self) -> int:
+        assert self.type_id == "int"
+        return int.from_bytes(self._value)
+
+    def expect_bool(self) -> bool:
+        assert self.type_id == "bool"
+        return self._value[0] != 0
+
+    def expect_float(self) -> float:
+        assert self.type_id == "float"
+        return struct.unpack("d", self._value)[0]
+
+    def expect_function(self) -> str:
+        assert self.type_id == "function"
+        return self._value.decode()
+
+    def to_python(self, interpreter: "Interpreter") -> object:
+        match self.type_id:
+            case "None":
+                return self.expect_none()
+            case "int":
+                return self.expect_int()
+            case "bool":
+                return self.expect_bool()
+            case "float":
+                return self.expect_float()
+            case "function":
+                return interpreter.functions[self.expect_function()]
+            case _:
+                raise RuntimeError(
+                    f"value cannot be converted into a native representation: type_id={self.type_id}"
+                )
+
+
 class FunctionReturn(Exception):  # noqa: N818
-    def __init__(self, value: object | None) -> None:
+    def __init__(self, value: Value) -> None:
         super().__init__(self)
-        self.value: object = value
+        self.value: Value = value
 
 
 @dataclass(kw_only=True)
@@ -59,15 +124,17 @@ class Function:
 
 @dataclass(kw_only=True)
 class Scope:
-    locals: dict[str, object] = field(default_factory=dict)
+    interpreter: "Interpreter"
 
-    def resolve(self, x: str) -> object:
+    locals: dict[str, Value] = field(default_factory=dict)
+
+    def resolve(self, x: str) -> Value:
         if x not in self.locals:
             raise RuntimeError(f"variable not defined: {x}")
 
         return self.locals[x]
 
-    def eval(self, x: Node) -> object:
+    def eval(self, x: Node) -> Value:
         if isinstance(x, ExpressionList):
             return self.eval(x.xs[0])
 
@@ -105,21 +172,25 @@ class Scope:
 
                 match op.text:
                     case "==":
-                        cond = cur == rhs
+                        match cur.type_id:
+                            case "int":
+                                cond = cur.expect_int() == rhs.expect_int()
+                            case _:
+                                raise RuntimeError(
+                                    f"unsupported equality: {cur} == {rhs}"
+                                )
                     case "<=":
-                        assert isinstance(cur, int)
-                        assert isinstance(rhs, int)
-                        cond = cur <= rhs
+                        cond = cur.expect_int() <= rhs.expect_int()
                     case _:
                         raise RuntimeError(
                             f"unsupported comparison operator: {op.text}"
                         )
 
                 if not cond:
-                    return False
+                    return Value.from_bool(False)  # noqa: FBT003
                 cur = rhs
 
-            return True
+            return Value.from_bool(True)  # noqa: FBT003
 
         if isinstance(x, OrExpr):
             return self.eval(x.rhs)
@@ -140,14 +211,11 @@ class Scope:
             assert x.op is not None
 
             lhs = self.eval(x.lhs)
-            assert isinstance(lhs, int)
-
             rhs = self.eval(x.rhs)
-            assert isinstance(rhs, int)
 
             match x.op.text:
                 case "+":
-                    return lhs + rhs
+                    return Value.from_int(lhs.expect_int() + rhs.expect_int())
 
                 case _:
                     raise NotImplementedError(f"unsupported operator: {x.op.text}")
@@ -159,17 +227,14 @@ class Scope:
             assert x.op is not None
 
             lhs = self.eval(x.lhs)
-            assert isinstance(lhs, int)
-
             rhs = self.eval(x.rhs)
-            assert isinstance(rhs, int)
 
             match x.op.text:
                 case "%":
-                    return lhs % rhs
+                    return Value.from_int(lhs.expect_int() % rhs.expect_int())
 
                 case "*":
-                    return lhs * rhs
+                    return Value.from_int(lhs.expect_int() * rhs.expect_int())
 
                 case _:
                     raise NotImplementedError(f"unsupported operator: {x.op.text}")
@@ -184,14 +249,14 @@ class Scope:
             return self.eval(x.x)
 
         if isinstance(x, Call):
-            func = self.eval(x.func)
-            assert isinstance(func, Function)
+            func_val = self.eval(x.func)
+            func = self.interpreter.functions[func_val.expect_function()]
 
             param_spec = func.data.params
             if len(x.positional_args) != len(param_spec.regular_params):
                 raise RuntimeError("wrong parameter count")
 
-            func_scope = Scope()
+            func_scope = Scope(interpreter=self.interpreter)
             for k, v in zip(param_spec.regular_params, x.positional_args, strict=True):
                 func_scope.locals[k.name.nfkd()] = self.eval(v)
 
@@ -200,7 +265,7 @@ class Scope:
             except FunctionReturn as e:
                 return e.value
 
-            return None
+            return Value.from_none()
 
         if isinstance(x, Atom):
             if isinstance(x.x, Token):
@@ -212,16 +277,19 @@ class Scope:
         if isinstance(x, AstLiteral):
             match x.x.type:
                 case "decinteger":
-                    return int(x.x.text)
+                    return Value.from_int(int(x.x.text))
+
+                case "floatnumber":
+                    return Value.from_float(float(x.x.text))
 
                 case "identifier":
                     match x.x.text:
                         case "True":
-                            return True
+                            return Value.from_bool(True)  # noqa: FBT003
                         case "False":
-                            return False
+                            return Value.from_bool(False)  # noqa: FBT003
                         case "None":
-                            return None
+                            return Value.from_none()
                         case _:
                             raise NotImplementedError(
                                 f"unknown named literal: {x.x.text}"
@@ -262,19 +330,28 @@ class Scope:
 
         if isinstance(x, IfStmt):
             cond = self.eval(x.cond)
-            if cond is True:
+
+            if cond.expect_bool():
                 self.exec(x.then)
             return
 
         if isinstance(x, WhileStmt):
             cond = self.eval(x.cond)
-            while cond:
+
+            while cond.expect_bool():
                 self.exec(x.loop)
                 cond = self.eval(x.cond)
             return
 
         if isinstance(x, Funcdef):
-            self.locals[x.name.nfkd()] = Function(data=x)
+            idx = self.interpreter.next_function_idx()
+
+            name = x.name.nfkd()
+            f_id = f"{idx}.{name}"
+
+            self.locals[name] = Value.from_function(f_id)
+            self.interpreter.functions[f_id] = Function(data=x)
+
             return
 
         if isinstance(x, SimpleStmt):
@@ -301,14 +378,14 @@ class Scope:
         if isinstance(x, AugmentedAssignmentStmt):
             name = x.target.x.nfkd()
             cur = self.locals[name]
-            assert isinstance(cur, int)
 
             val = self.eval(x.value)
-            assert isinstance(val, int)
 
             match x.op.text:
                 case "+=":
-                    self.locals[name] = cur + val
+                    self.locals[name] = Value.from_int(
+                        cur.expect_int() + val.expect_int()
+                    )
                 case _:
                     raise NotImplementedError(
                         f"unsupported augmented assignment operator: {x.op.text}"
@@ -317,9 +394,21 @@ class Scope:
             return
 
         if isinstance(x, ReturnStmt):
-            value: object = None
+            value: Value = Value.from_none()
             if x.value is not None:
                 value = self.eval(x.value)
             raise FunctionReturn(value)
 
         raise NotImplementedError(f"unknown node: {x.type}")
+
+
+@dataclass(kw_only=True)
+class Interpreter:
+    functions: dict[str, Function] = field(default_factory=dict)
+    function_idx: int = 0
+
+    def next_function_idx(self) -> int:
+        res = self.function_idx
+        self.function_idx += 1
+
+        return res

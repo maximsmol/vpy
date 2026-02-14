@@ -8,6 +8,7 @@ from typing import override
 import regex
 
 from .grammar import delimiters as g_delim
+from .grammar import floats as g_floats
 from .grammar import indentifiers as g_id
 from .grammar import integers as g_int
 from .grammar import operators as g_op
@@ -54,6 +55,7 @@ class Token:
                 "nl": token.NL,
                 "newline": token.NEWLINE,
                 "decinteger": token.NUMBER,
+                "floatnumber": token.NUMBER,
                 "operator": token.OP,
                 "endmarker": token.ENDMARKER,
                 "identifier": token.NAME,
@@ -71,6 +73,7 @@ class Token:
 toks: list[tuple[regex.Pattern[str], str]] = [
     (regex.compile(r"[ \t\f]+"), "whitespace"),
     (regex.compile(r"\n|\r\n|\r"), "newline"),
+    (g_floats.floatnumber_re, "floatnumber"),
     (g_int.decinteger_re, "decinteger"),
     (g_delim.delimiters_long_re, "delimiter"),
     (g_op.operator_long_re, "operator"),

@@ -4,7 +4,7 @@ from textwrap import dedent
 from types import CodeType
 from typing import Any, Literal, overload
 
-from vpy.interpret import Scope
+from vpy.interpret import Interpreter, Scope, Value
 
 from .lex import Lexer
 from .parse import ExpressionStmt, FileInput, Parser, Statement
@@ -67,8 +67,16 @@ def main() -> None:
 
     #     f(10)
     # """)[1:]
+    src = dedent("""
+        def f(x: int) -> int | float:
+            if x == 5:
+                return 123
+            return 0.999
+
+        f(10)
+    """)[1:]
     # src = Path("tests/problems_99/p2.01_is_prime.py").read_text(encoding="utf-8")
-    src = Path("tests/problems_99/p2.07_gcd.py").read_text(encoding="utf-8")
+    # src = Path("tests/problems_99/p2.07_gcd.py").read_text(encoding="utf-8")
 
     l = Lexer(data=src)
     p = Parser(lex=l)
@@ -77,7 +85,8 @@ def main() -> None:
 
     print()
     print("Evaluated:")
-    i = Scope()
+    global_i = Interpreter()
+    i = Scope(interpreter=global_i)
 
     assert isinstance(ast_ours, FileInput)
 
@@ -89,7 +98,7 @@ def main() -> None:
         ours = i.eval(ast_ours.xs[-1].x.xs[-1].x.x)
     else:
         i.exec(ast_ours)
-        ours = None
+        ours = Value.from_none()
 
     ast_ref = ast.parse(src)
     stmts = ast_ref.body
@@ -108,10 +117,16 @@ def main() -> None:
         reference = None
 
     print(ours)
+
+    ours_py = ours.to_python(global_i)
+    print(".to_python():")
+    print(ours_py)
+
+    print()
     print("Reference:")
     print(reference)
 
-    if type(ours) is not type(reference) or ours != reference:
+    if type(ours_py) is not type(reference) or ours_py != reference:
         print("!!! Mismatch")
     else:
         print("Matches")

@@ -1,4 +1,16 @@
-from ctypes import CFUNCTYPE, c_int64
+import ctypes
+from ctypes import (
+    CFUNCTYPE,
+    POINTER,
+    Structure,
+    c_bool,
+    c_double,
+    c_int64,
+    c_uint8,
+    c_uint64,
+    cast,
+    pointer,
+)
 from pathlib import Path
 from textwrap import dedent
 
@@ -43,6 +55,40 @@ def execute(engine: llvm.ExecutionEngine, code: str) -> int:
         engine.remove_module(mod)
 
 
+class CompilerValue(Structure):
+    _fields_ = [("type_id", c_uint64), ("data", POINTER(c_uint8))]
+
+
+class CompilerValueDataInt(Structure):
+    _fields_ = [("value", c_int64)]
+
+
+class CompilerValueDataBool(Structure):
+    _fields_ = [("value", c_bool)]
+
+
+class CompilerValueDataFloat(Structure):
+    _fields_ = [("value", c_double)]
+
+
+def to_python(ptr: int) -> object:
+    val = CompilerValue.from_address(ptr)
+    match val.type_id:
+        case 0:
+            return None
+        case 1:
+            data = cast(pointer(val.data), POINTER(CompilerValueDataInt)).contents
+            return data.value
+        case 2:
+            data = cast(pointer(val.data), POINTER(CompilerValueDataBool)).contents
+            return data.value
+        case 3:
+            data = cast(pointer(val.data), POINTER(CompilerValueDataFloat)).contents
+            return data.value
+        case x:
+            raise RuntimeError(f"unknown compiler value type: {x}")
+
+
 def main() -> None:
     engine = setup_llvm()
 
@@ -78,8 +124,16 @@ def main() -> None:
 
     #     f(10)
     # """)[1:]
+    src = dedent("""
+        def f(x: int) -> int | float:
+            if x == 5:
+                return 123
+            return 0.999
+
+        f(10)
+    """)[1:]
     # src = Path("tests/problems_99/p2.01_is_prime.py").read_text(encoding="utf-8")
-    src = Path("tests/problems_99/p2.07_gcd.py").read_text(encoding="utf-8")
+    # src = Path("tests/problems_99/p2.07_gcd.py").read_text(encoding="utf-8")
 
     l = Lexer(data=src)
     p = Parser(lex=l)
@@ -98,7 +152,8 @@ def main() -> None:
     res = execute(engine, llvm_ir)
 
     print()
-    print("module_root() =", res)
+    print(f"module_root() = 0x{res:x}")
+    print(to_python(res))
 
     cur = p.tok()
     if cur.type != "endmarker":

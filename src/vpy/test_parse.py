@@ -100,6 +100,16 @@ def main() -> None:
                 f(10)
             """)[1:]
         )
+        assert process(
+            dedent("""
+                def f(x: int) -> int | float:
+                    if x == 5:
+                        return 123
+                    return 0.999
+
+                f(10)
+            """)[1:]
+        )
 
         print("Smoketest OK")
 

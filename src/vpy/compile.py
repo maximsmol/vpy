@@ -144,11 +144,15 @@ class Scope:
                 res = self.next_id(prefix="_eq")
 
                 subres = self.next_id(prefix="_compare.subres")
+
+                cur_data = self.expect_int(cur)
+                rhs_data = self.expect_int(rhs)
+
                 match op.text:
                     case "==":
-                        self.emit(f"%{subres} = icmp eq i64 %{cur}, %{rhs}")
+                        self.emit(f"%{subres} = icmp eq i64 %{cur_data}, %{rhs_data}")
                     case "<=":
-                        self.emit(f"%{subres} = icmp sle i64 %{cur}, %{rhs}")
+                        self.emit(f"%{subres} = icmp sle i64 %{cur_data}, %{rhs_data}")
                     case _:
                         raise RuntimeError(
                             f"unsupported comparison operator: {op.text}"
@@ -157,9 +161,9 @@ class Scope:
                 self.emit(f"%{res} = and i1 %{prev_res}, %{subres}")
                 cur = rhs
 
-            final_res = self.next_id(prefix="_compare.i64")
-            self.emit(f"%{final_res} = zext i1 %{res} to i64")
-            return final_res
+            res_i8 = self.next_id(prefix="_compare.i8")
+            self.emit(f"%{res_i8} = zext i1 %{res} to i8")
+            return self.make_bool(res_i8)
 
         if isinstance(x, OrExpr):
             return self.compile_expr(x.rhs)
@@ -182,11 +186,15 @@ class Scope:
             lhs = self.compile_expr(x.lhs)
             rhs = self.compile_expr(x.rhs)
 
-            res = self.next_id(prefix="_aexpr")
-
             match x.op.text:
                 case "+":
-                    self.emit(f"%{res} = add i64 %{lhs}, %{rhs}")
+                    lhs_data = self.expect_int(lhs)
+                    rhs_data = self.expect_int(rhs)
+
+                    res_data = self.next_id(prefix="_aexpr.data")
+                    self.emit(f"%{res_data} = add i64 %{lhs_data}, %{rhs_data}")
+
+                    res = self.make_int(res_data)
 
                 case _:
                     raise NotImplementedError(f"unsupported oeprator: {x.op.text}")
@@ -202,15 +210,24 @@ class Scope:
             lhs = self.compile_expr(x.lhs)
             rhs = self.compile_expr(x.rhs)
 
-            res = self.next_id(prefix="_mexpr")
-
             match x.op.text:
                 case "%":
-                    self.emit(f"%{res} = urem i64 %{lhs}, %{rhs}")
+                    lhs_data = self.expect_int(lhs)
+                    rhs_data = self.expect_int(rhs)
+
+                    res_data = self.next_id(prefix="_mexpr.data")
+                    self.emit(f"%{res_data} = urem i64 %{lhs_data}, %{rhs_data}")
+
+                    res = self.make_int(res_data)
 
                 case "*":
-                    self.emit(f"%{res} = mul i64 %{lhs}, %{rhs}")
+                    lhs_data = self.expect_int(lhs)
+                    rhs_data = self.expect_int(rhs)
 
+                    res_data = self.next_id(prefix="_mexpr.data")
+                    self.emit(f"%{res_data} = mul i64 %{lhs_data}, %{rhs_data}")
+
+                    res = self.make_int(res_data)
                 case _:
                     raise NotImplementedError(f"unsupported oeprator: {x.op.text}")
 
@@ -231,19 +248,19 @@ class Scope:
             params = x.positional_args
 
             args = self.next_id(prefix="call.args")
-            self.emit(f"%{args} = alloca i64, i64 {len(params)}")
+            self.emit(f"%{args} = alloca ptr, i64 {len(params)}")
 
             for idx, param in enumerate(params):
                 param_var = self.compile_expr(param)
 
-                offset = self.next_id(prefix=f"call.args.{idx}")
-                self.emit(f"%{offset} = getelementptr i64, ptr %{args}, i64 {idx}")
-                self.emit(f"store i64 %{param_var}, i64* %{offset}")
+                arg = self.next_id(prefix=f"call.args.{idx}")
+                self.emit(f"%{arg} = getelementptr ptr, ptr %{args}, i64 {idx}")
+                self.emit(f"store ptr %{param_var}, ptr %{arg}")
 
             self.emit("")
 
             res = self.next_id(prefix="call.res")
-            self.emit(f"%{res} = call i64 %{f}(i64* %{args})")
+            self.emit(f"%{res} = call ptr %{f}(ptr %{args})")
 
             return res
 
@@ -255,17 +272,31 @@ class Scope:
             return self.compile_expr(x.x)
 
         if isinstance(x, AstLiteral):
-            res = self.next_id(prefix="_const")
-
             match x.x.type:
                 case "decinteger":
-                    self.emit(f"%{res} = bitcast i64 {x.x.text} to i64")
+                    res_data = self.next_id(prefix="_const.data")
+                    self.emit(f"%{res_data} = bitcast i64 {x.x.text} to i64")
+
+                    res = self.make_int(res_data)
+                case "floatnumber":
+                    res_data = self.next_id(prefix="_const.data")
+                    self.emit(f"%{res_data} = bitcast double {x.x.text} to double")
+
+                    res = self.make_float(res_data)
                 case "identifier":
                     match x.x.text:
                         case "True":
-                            self.emit(f"%{res} = bitcast i64 1 to i64")
+                            res_data = self.next_id(prefix="_const.data")
+                            self.emit(f"%{res_data} = bitcast i8 1 to i8")
+
+                            res = self.make_bool(res_data)
                         case "False":
-                            self.emit(f"%{res} = bitcast i64 0 to i64")
+                            res_data = self.next_id(prefix="_const.data")
+                            self.emit(f"%{res_data} = bitcast i8 0 to i8")
+
+                            res = self.make_bool(res_data)
+                        case "None":
+                            res = self.make_none()
                         case _:
                             raise NotImplementedError(
                                 f"unsupported named literal: {x.x.text}"
@@ -277,7 +308,7 @@ class Scope:
         raise NotImplementedError(f"unknown node: {x.type}")
 
     def compile_func_body(self, x: Funcdef, *, name: str) -> None:
-        self.emit(f"define i64 @{name}(ptr %args) {{")
+        self.emit(f"define ptr @{name}(ptr %args) {{")
         with self.indent():
             self.emit("start:")
 
@@ -286,22 +317,31 @@ class Scope:
                 name = param.name.nfkd()
 
                 var = self.next_id(prefix=name)
-                offset = self.next_id(prefix=f"arg.offset.{name}")
+                arg = self.next_id(prefix=f"arg.ptr.{name}")
 
-                self.emit(f"%{offset} = getelementptr i64, ptr %args, i64 {idx}")
-                self.emit(f"%{var} = load i64, ptr %{offset}")
+                self.emit(f"%{arg} = getelementptr ptr, ptr %args, i64 {idx}")
+                self.emit(f"%{var} = load ptr, ptr %{arg}")
 
                 self.locals[name] = var
 
             self.compile(x.body)
 
             self.emit("; fallback: return None")
-            self.emit("ret i64 0")
+            none = self.make_none()
+            self.emit(f"ret ptr %{none}")
         self.emit("}")
 
     def compile(self, x: Node) -> None:
         if isinstance(x, FileInput):
-            self.emit("define i64 @module_root() {")
+            self.emit("declare void @abort() noreturn")
+            self.emit("declare ptr @malloc(i64)")
+            self.emit("declare i64 @puts(ptr)")
+            self.emit("")
+            self.emit(r'@str.error = constant [19 x i8] c"[panic] type error\00"')
+            self.emit("")
+            self.emit("%struct.value = type { i64, [ 0 x i8 ] }")
+            self.emit("")
+            self.emit("define ptr @module_root() {")
             with self.indent():
                 self.emit("start:")
                 for s in x.xs:
@@ -368,13 +408,15 @@ class Scope:
                 new = loop_end_locals[k]
 
                 self.emit(
-                    f"%{var} = phi i64 [ %{prev}, %{prev_block} ], [ %{new}, %{loop_epilog_label} ]"
+                    f"%{var} = phi ptr [ %{prev}, %{prev_block} ], [ %{new}, %{loop_epilog_label} ]"
                 )
                 self.locals[k] = var
 
             cond = self.compile_expr(x.cond)
+            cond_data = self.expect_bool(cond)
+
             cond_i1 = self.next_id(prefix="while.cond.i1")
-            self.emit(f"%{cond_i1} = icmp eq i64 %{cond}, 1")
+            self.emit(f"%{cond_i1} = icmp eq i8 %{cond_data}, 1")
 
             end_label = self.next_id(prefix="while.end")
 
@@ -390,7 +432,7 @@ class Scope:
             # >>> while.loop.epilog
             self.emit_block(loop_epilog_label)
             for k, new in loop_end_locals.items():
-                self.emit(f"%{new} = bitcast i64 %{self.locals[k]} to i64")
+                self.emit(f"%{new} = bitcast ptr %{self.locals[k]} to ptr")
 
             self.emit(f"br label %{loop_cond_label}")
 
@@ -422,20 +464,29 @@ class Scope:
             return
 
         if isinstance(x, IfStmt):
-            prev_block = self.cur_block
             prev_locals = copy(self.locals)
 
             cond = self.compile_expr(x.cond)
+            cond_data = self.expect_bool(cond)
+
             cond_i1 = self.next_id(prefix="if.cond.i1")
-            self.emit(f"%{cond_i1} = icmp eq i64 %{cond}, 1")
+            self.emit(f"%{cond_i1} = icmp eq i8 %{cond_data}, 1")
 
             then_label = self.next_id(prefix="if.then")
+            then_epilog_label = self.next_id(prefix="if.then.epilog")
             end_label = self.next_id(prefix="if.end")
 
+            cond_epilog_label = self.next_id(prefix="if.cond.epilog")
+            self.emit(f"br label %{cond_epilog_label}")
+
+            self.emit_block(cond_epilog_label)
             self.emit(f"br i1 %{cond_i1}, label %{then_label}, label %{end_label}")
 
             self.emit_block(then_label)
             self.compile(x.then)
+            self.emit(f"br label %{then_epilog_label}")
+
+            self.emit_block(then_epilog_label)
             self.emit(f"br label %{end_label}")
 
             self.emit_block(end_label)
@@ -448,7 +499,7 @@ class Scope:
                 var = self.next_id(prefix=k)
 
                 self.emit(
-                    f"%{var} = phi i64 [ %{prev}, %{prev_block} ], [ %{new}, %{then_label} ]"
+                    f"%{var} = phi ptr [ %{prev}, %{cond_epilog_label} ], [ %{new}, %{then_epilog_label} ]"
                 )
                 self.locals[k] = var
 
@@ -462,7 +513,7 @@ class Scope:
 
         if isinstance(x, ExpressionStmt):
             res = self.compile_expr(x.x)
-            self.emit(f"ret i64 %{res}")
+            self.emit(f"ret ptr %{res}")
             return
 
         if isinstance(x, AssignmentStmt):
@@ -476,7 +527,7 @@ class Scope:
 
             val = self.compile_expr(x.value)
 
-            self.emit(f"%{var} = bitcast i64 %{val} to i64")
+            self.emit(f"%{var} = bitcast ptr %{val} to ptr")
             self.emit("")
             self.locals[name] = var
 
@@ -488,11 +539,16 @@ class Scope:
             val = self.compile_expr(x.value)
 
             old = self.locals[name]
-            res = self.next_id(prefix=name)
 
             match x.op.text:
                 case "+=":
-                    self.emit(f"%{res} = add i64 %{old}, %{val}")
+                    old_data = self.expect_int(old)
+                    val_data = self.expect_int(val)
+
+                    res_data = self.next_id(prefix=f"{name}.data")
+                    self.emit(f"%{res_data} = add i64 %{old_data}, %{val_data}")
+
+                    res = self.make_int(res_data)
 
                 case _:
                     raise NotImplementedError(
@@ -509,13 +565,130 @@ class Scope:
                 return
 
             val = self.compile_expr(x.value)
-            self.emit(f"ret i64 %{val}")
+            self.emit(f"ret ptr %{val}")
             return
 
         raise NotImplementedError(f"unknown node: {x.type}")
 
+    def struct_sizeof(self, x: str) -> str:
+        size_ptr = self.next_id(prefix="struct_sizeof.size_ptr")
+        self.emit(f"%{size_ptr} = getelementptr {x}, ptr null, i64 1")
 
-@dataclass
+        res = self.next_id(prefix="struct_sizeof.res")
+        self.emit(f"%{res} = ptrtoint ptr %{size_ptr} to i64")
+
+        return res
+
+    def make_none(self) -> str:
+        res = self.next_id(prefix="make_none.res")
+        self.emit(f"%{res} = call ptr @malloc(i64 %{self.struct_sizeof('{i64}')})")
+
+        self.emit(f"store i64 0, ptr %{res}")
+
+        return res
+
+    def make_int(self, x: str) -> str:
+
+        res = self.next_id(prefix="make_int.res")
+        self.emit(f"%{res} = call ptr @malloc(i64 %{self.struct_sizeof('{i64, i64}')})")
+
+        self.emit(f"store i64 1, ptr %{res}")
+
+        data_ptr = self.next_id(prefix="make_int.data_ptr")
+        self.emit(
+            f"%{data_ptr} = getelementptr %struct.value, ptr %{res}, i64 0, i32 1"
+        )
+        self.emit(f"store i64 %{x}, ptr %{data_ptr}")
+
+        return res
+
+    def make_bool(self, x: str) -> str:
+        res = self.next_id(prefix="make_bool.res")
+        self.emit(f"%{res} = call ptr @malloc(i64 %{self.struct_sizeof('{i64, i8}')})")
+
+        self.emit(f"store i64 2, ptr %{res}")
+
+        data_ptr = self.next_id(prefix="make_bool.data_ptr")
+        self.emit(
+            f"%{data_ptr} = getelementptr %struct.value, ptr %{res}, i64 0, i32 1"
+        )
+        self.emit(f"store i8 %{x}, ptr %{data_ptr}")
+
+        return res
+
+    def make_float(self, x: str) -> str:
+        res = self.next_id(prefix="make_float.res")
+        self.emit(
+            f"%{res} = call ptr @malloc(i64 %{self.struct_sizeof('{i64, double}')})"
+        )
+
+        self.emit(f"store i64 3, ptr %{res}")
+
+        data_ptr = self.next_id(prefix="make_float.data_ptr")
+        self.emit(
+            f"%{data_ptr} = getelementptr %struct.value, ptr %{res}, i64 0, i32 1"
+        )
+        self.emit(f"store double %{x}, ptr %{data_ptr}")
+
+        return res
+
+    def expect_type(self, x: str, expected: int) -> None:
+        type_id = self.next_id(prefix="expect_int.type_id")
+        self.emit(f"%{type_id} = load i64, ptr %{x}")
+
+        cond_i1 = self.next_id(prefix="expect_type.cond_i1")
+        self.emit(f"%{cond_i1} = icmp eq i64 %{type_id}, {expected}")
+
+        ok_label = self.next_id(prefix="expect_type.ok")
+        crash_label = self.next_id(prefix="expect_type.crash")
+
+        self.emit(f"br i1 %{cond_i1}, label %{ok_label}, label %{crash_label}")
+        self.emit_block(crash_label)
+
+        self.emit("call i64 @puts(ptr @str.error)")
+        self.emit("call void @abort()")
+        self.emit(f"br label %{ok_label}")
+
+        self.emit_block(ok_label)
+
+    def expect_int(self, x: str) -> str:
+        self.expect_type(x, 1)
+
+        # todo(maximsmol): throw on wrong type
+        ptr = self.next_id(prefix="expect_int.ptr")
+        self.emit(f"%{ptr} = getelementptr %struct.value, ptr %{x}, i64 0, i32 1")
+
+        res = self.next_id(prefix="expect_int.res")
+        self.emit(f"%{res} = load i64, ptr %{ptr}")
+
+        return res
+
+    def expect_bool(self, x: str) -> str:
+        self.expect_type(x, 2)
+
+        # todo(maximsmol): throw on wrong type
+        ptr = self.next_id(prefix="expect_bool.ptr")
+        self.emit(f"%{ptr} = getelementptr %struct.value, ptr %{x}, i64 0, i32 1")
+
+        res = self.next_id(prefix="expect_bool.res")
+        self.emit(f"%{res} = load i8, ptr %{ptr}")
+
+        return res
+
+    def expect_float(self, x: str) -> str:
+        self.expect_type(x, 3)
+
+        # todo(maximsmol): throw on wrong type
+        ptr = self.next_id(prefix="expect_float.ptr")
+        self.emit(f"%{ptr} = getelementptr %struct.value, ptr %{x}, i64 0, i32 1")
+
+        res = self.next_id(prefix="expect_float.res")
+        self.emit(f"%{res} = load double, ptr %{ptr}")
+
+        return res
+
+
+@dataclass(kw_only=True)
 class Compiler:
     scopes: list[Scope] = field(default_factory=list)
     scope_idx: int = 0

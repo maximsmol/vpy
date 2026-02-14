@@ -108,6 +108,9 @@ class AstLiteral(Node):
             case "decinteger":
                 return ast.Constant(value=int(self.x.text))
 
+            case "floatnumber":
+                return ast.Constant(value=float(self.x.text))
+
             case "identifier":
                 match self.x.text:
                     case "True":
@@ -327,6 +330,8 @@ class XorExpr(Node):
 
 @dataclass(kw_only=True)
 class OrExpr(Node):
+    lhs: "OrExpr | None"
+    op: Token | None
     rhs: XorExpr
 
     @property
@@ -334,8 +339,35 @@ class OrExpr(Node):
     def type(self) -> str:
         return "or_expr"
 
-    def to_ast(self) -> ast.expr:
-        return self.rhs.to_ast()
+    def to_ast(self) -> ast.BinOp | ast.expr:
+        if self.lhs is None:
+            return self.rhs.to_ast()
+
+        # todo(maximsmol): use inheritance to make this obvious
+        assert self.op is not None
+
+        left = self.lhs.to_ast()
+        assert isinstance(left, ast.expr)
+
+        match self.op.text:
+            case "|":
+                op = ast.BitOr()
+
+            case _:
+                raise NotImplementedError(f"unknown operator: {self.op.text!r}")
+
+        right = self.rhs.to_ast()
+        assert isinstance(right, ast.expr)
+
+        return ast.BinOp(left=left, op=op, right=right)
+
+    @override
+    def unparse(self, *, parens: bool = False) -> str:
+        x = super().unparse(parens=parens)
+        if parens:
+            return f"({x})"
+
+        return x
 
 
 @dataclass(kw_only=True)
@@ -838,12 +870,17 @@ class Parser:
         except ParseFailedError:
             return None
 
-    def expect(self, typ: str) -> Token:
+    def expect_any(self, typs: set[str]) -> Token:
         res = self.tok()
-        if res.type != typ:
-            raise ParseFailedError(f"expected <{typ}>, found <{res.type}> ({res})")
+        if res.type not in typs:
+            raise ParseFailedError(
+                f"expected {' or '.join([f'<{t}>' for t in typs])}, found <{res.type}> ({res})"
+            )
 
         return res
+
+    def expect(self, typ: str) -> Token:
+        return self.expect_any({typ})
 
     def expect_operator(self, text: str) -> Token:
         res = self.tok()
@@ -889,7 +926,7 @@ class Parser:
 
     @parse_function
     def literal(self) -> AstLiteral:
-        return AstLiteral(x=self.expect("decinteger"))
+        return AstLiteral(x=self.expect_any({"decinteger", "floatnumber"}))
 
     @parse_function
     def atom(self) -> Atom:
@@ -1011,8 +1048,29 @@ class Parser:
         return XorExpr(rhs=self.and_expr())
 
     @parse_function
+    def or_expr_base(self) -> OrExpr:
+        return OrExpr(lhs=None, op=None, rhs=self.xor_expr())
+
+    @parse_function
     def or_expr(self) -> OrExpr:
-        return OrExpr(rhs=self.xor_expr())
+        lhs = self.or_expr_base()
+
+        while True:
+            try:
+                with self.checkpoint():
+                    _ = self.opt("whitespace")
+                    op = self.expect_operator("|")
+            except ParseFailedError:
+                return lhs
+
+            _ = self.opt("whitespace")
+
+            rhs = self.xor_expr()
+
+            lhs = OrExpr(lhs=lhs, op=op, rhs=rhs)
+            lhs.children = self.children
+
+            self.children = [lhs]
 
     @parse_function
     def comparison(self) -> Comparison:
