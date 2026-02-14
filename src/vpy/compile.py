@@ -294,6 +294,9 @@ class Scope:
                 self.locals[name] = var
 
             self.compile(x.body)
+
+            self.emit("; fallback: return None")
+            self.emit("ret i64 0")
         self.emit("}")
 
     def compile(self, x: Node) -> None:
@@ -335,6 +338,7 @@ class Scope:
 
             loop_cond_label = self.next_id(prefix="while.cond")
             loop_label = self.next_id(prefix="while.loop")
+            loop_epilog_label = self.next_id(prefix="while.loop.epilog")
 
             self.emit(f"br label %{loop_cond_label}")
 
@@ -364,7 +368,7 @@ class Scope:
                 new = loop_end_locals[k]
 
                 self.emit(
-                    f"%{var} = phi i64 [ %{prev}, %{prev_block} ], [ %{new}, %{loop_label} ]"
+                    f"%{var} = phi i64 [ %{prev}, %{prev_block} ], [ %{new}, %{loop_epilog_label} ]"
                 )
                 self.locals[k] = var
 
@@ -381,6 +385,10 @@ class Scope:
             self.emit_block(loop_label)
             self.compile(x.loop)
 
+            self.emit(f"br label %{loop_epilog_label}")
+
+            # >>> while.loop.epilog
+            self.emit_block(loop_epilog_label)
             for k, new in loop_end_locals.items():
                 self.emit(f"%{new} = bitcast i64 %{self.locals[k]} to i64")
 

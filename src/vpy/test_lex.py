@@ -1,8 +1,8 @@
 import difflib
-from textwrap import dedent
 import tokenize
 from io import StringIO
 from pathlib import Path
+from textwrap import dedent
 from tokenize import TokenInfo, generate_tokens
 from traceback import print_exc
 

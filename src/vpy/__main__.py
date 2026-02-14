@@ -1,4 +1,5 @@
 from argparse import ArgumentParser
+import ast
 from codecs import escape_decode
 from io import StringIO
 from pathlib import Path
@@ -19,6 +20,7 @@ def main() -> None:
     _ = lexp.add_argument("--reference", action="store_true")
 
     parsep = subp.add_parser("parse")
+    _ = parsep.add_argument("--reference", action="store_true")
 
     args = argp.parse_args()
 
@@ -46,6 +48,11 @@ def main() -> None:
                     break
 
         case "parse":
+            if args.reference:
+                print(ast.dump(ast.parse(source), indent=2))
+
+                return
+
             p = Parser(lex=Lexer(data=source))
             print(p.parse())
 

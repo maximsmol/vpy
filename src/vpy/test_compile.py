@@ -1,4 +1,5 @@
 from ctypes import CFUNCTYPE, c_int64
+from pathlib import Path
 from textwrap import dedent
 
 import llvmlite
@@ -71,12 +72,14 @@ def main() -> None:
     #         a = a * a
     #     a
     # """)[1:]
-    src = dedent("""
-        def f(x: int) -> int:
-            return x + 10
+    # src = dedent("""
+    #     def f(x: int) -> int:
+    #         return x + 10
 
-        f(10)
-    """)[1:]
+    #     f(10)
+    # """)[1:]
+    # src = Path("tests/problems_99/p2.01_is_prime.py").read_text(encoding="utf-8")
+    src = Path("tests/problems_99/p2.07_gcd.py").read_text(encoding="utf-8")
 
     l = Lexer(data=src)
     p = Parser(lex=l)

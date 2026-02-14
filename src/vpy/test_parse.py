@@ -103,8 +103,6 @@ def main() -> None:
 
         print("Smoketest OK")
 
-    return
-
     root_p = Path(__file__).parent.parent.parent / "tests/problems_99"
 
     for f in root_p.iterdir():

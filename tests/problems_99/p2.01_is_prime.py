@@ -12,3 +12,6 @@ def is_prime(x: int) -> bool:
         cur += 2
 
     return True
+
+
+is_prime(17)

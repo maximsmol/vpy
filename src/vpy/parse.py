@@ -1,27 +1,31 @@
+import abc
 import ast
+from abc import abstractmethod
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, field, fields
 from functools import wraps
-from typing import Concatenate, Generic, Literal, TypeVar, override
+from typing import Concatenate, override
 
 from vpy.lex import Lexer, Token
 
-T_co = TypeVar("T_co", default=str, bound=str, covariant=True)
-
 
 @dataclass(kw_only=True)
-class Node(Generic[T_co]):
-    type: T_co
-    children: "list[Node[str] | Token]" = field(default_factory=list)
+class Node(abc.ABC):
+    children: "list[Node | Token]" = field(default_factory=list)
+
+    @property
+    @abstractmethod
+    def type(self) -> str:
+        raise NotImplementedError
 
     def to_str(self, *, indent: str = "", visited: set[int] | None = None) -> str:
         if visited is None:
             visited = set()
 
         if id(self) in visited:
-            return f"<recursion: {self.type}#{id(self)}>"
+            return f"<recursion: {self.__class__.__name__}#{id(self)}>"
         visited.add(id(self))
 
         node_fields: dict[int, str] = {}
@@ -89,15 +93,16 @@ class Node(Generic[T_co]):
 
         return "".join(res)
 
-    def to_ast(self) -> ast.AST:
-        raise NotImplementedError(f"{self.type!r} has no `to_ast` implementation")
-
 
 @dataclass(kw_only=True)
-class AstLiteral(Node[Literal["literal"]]):
+class AstLiteral(Node):
     x: Token
 
+    @property
     @override
+    def type(self) -> str:
+        return "literal"
+
     def to_ast(self) -> ast.Constant:
         match self.x.type:
             case "decinteger":
@@ -123,10 +128,14 @@ class AstLiteral(Node[Literal["literal"]]):
 
 
 @dataclass(kw_only=True)
-class Atom(Node[Literal["atom"]]):
+class Atom(Node):
     x: AstLiteral | Token
 
+    @property
     @override
+    def type(self) -> str:
+        return "atom"
+
     def to_ast(self) -> ast.Constant | ast.Name:
         if isinstance(self.x, Token):
             assert self.x.type == "identifier"
@@ -136,11 +145,15 @@ class Atom(Node[Literal["atom"]]):
 
 
 @dataclass(kw_only=True)
-class Call(Node[Literal["call"]]):
+class Call(Node):
     func: "Primary"
     positional_args: "list[AssignmentExpression]"
 
+    @property
     @override
+    def type(self) -> str:
+        return "call"
+
     def to_ast(self) -> ast.Call:
         return ast.Call(
             func=self.func.to_ast(), args=[x.to_ast() for x in self.positional_args]
@@ -148,39 +161,55 @@ class Call(Node[Literal["call"]]):
 
 
 @dataclass(kw_only=True)
-class Primary(Node[Literal["primary"]]):
+class Primary(Node):
     x: Atom | Call
 
+    @property
     @override
+    def type(self) -> str:
+        return "primary"
+
     def to_ast(self) -> ast.expr:
         return self.x.to_ast()
 
 
 @dataclass(kw_only=True)
-class Power(Node[Literal["power"]]):
+class Power(Node):
     x: Primary
 
+    @property
     @override
+    def type(self) -> str:
+        return "power"
+
     def to_ast(self) -> ast.expr:
         return self.x.to_ast()
 
 
 @dataclass(kw_only=True)
-class UExpr(Node[Literal["u_expr"]]):
+class UExpr(Node):
     x: Power
 
+    @property
     @override
+    def type(self) -> str:
+        return "u_expr"
+
     def to_ast(self) -> ast.expr:
         return self.x.to_ast()
 
 
 @dataclass(kw_only=True)
-class MExpr(Node[Literal["m_expr"]]):
+class MExpr(Node):
     lhs: "MExpr | None"
     op: Token | None
     rhs: UExpr
 
+    @property
     @override
+    def type(self) -> str:
+        return "m_expr"
+
     def to_ast(self) -> ast.BinOp | ast.expr:
         if self.lhs is None:
             return self.rhs.to_ast()
@@ -216,12 +245,16 @@ class MExpr(Node[Literal["m_expr"]]):
 
 
 @dataclass(kw_only=True)
-class AExpr(Node[Literal["a_expr"]]):
+class AExpr(Node):
     lhs: "AExpr | None"
     op: Token | None
     rhs: MExpr
 
+    @property
     @override
+    def type(self) -> str:
+        return "a_expr"
+
     def to_ast(self) -> ast.BinOp | ast.expr:
         if self.lhs is None:
             return self.rhs.to_ast()
@@ -254,48 +287,68 @@ class AExpr(Node[Literal["a_expr"]]):
 
 
 @dataclass(kw_only=True)
-class ShiftExpr(Node[Literal["shift_expr"]]):
+class ShiftExpr(Node):
     rhs: AExpr
 
+    @property
     @override
+    def type(self) -> str:
+        return "shift_expr"
+
     def to_ast(self) -> ast.expr:
         return self.rhs.to_ast()
 
 
 @dataclass(kw_only=True)
-class AndExpr(Node[Literal["and_expr"]]):
+class AndExpr(Node):
     rhs: ShiftExpr
 
+    @property
     @override
+    def type(self) -> str:
+        return "and_expr"
+
     def to_ast(self) -> ast.expr:
         return self.rhs.to_ast()
 
 
 @dataclass(kw_only=True)
-class XorExpr(Node[Literal["xor_expr"]]):
+class XorExpr(Node):
     rhs: AndExpr
 
+    @property
     @override
+    def type(self) -> str:
+        return "xor_expr"
+
     def to_ast(self) -> ast.expr:
         return self.rhs.to_ast()
 
 
 @dataclass(kw_only=True)
-class OrExpr(Node[Literal["or_expr"]]):
+class OrExpr(Node):
     rhs: XorExpr
 
+    @property
     @override
+    def type(self) -> str:
+        return "or_expr"
+
     def to_ast(self) -> ast.expr:
         return self.rhs.to_ast()
 
 
 @dataclass(kw_only=True)
-class Comparison(Node[Literal["comparison"]]):
+class Comparison(Node):
     lhs: OrExpr
     ops: list[Token] | None
     rhs: list[OrExpr] | None
 
+    @property
     @override
+    def type(self) -> str:
+        return "comparison"
+
     def to_ast(self) -> ast.expr:
         if self.ops is None:
             return self.lhs.to_ast()
@@ -325,75 +378,107 @@ class Comparison(Node[Literal["comparison"]]):
 
 
 @dataclass(kw_only=True)
-class NotTest(Node[Literal["not_test"]]):
+class NotTest(Node):
     x: Comparison
 
+    @property
     @override
+    def type(self) -> str:
+        return "note_test"
+
     def to_ast(self) -> ast.expr:
         return self.x.to_ast()
 
 
 @dataclass(kw_only=True)
-class AndTest(Node[Literal["and_test"]]):
+class AndTest(Node):
     rhs: NotTest
 
+    @property
     @override
+    def type(self) -> str:
+        return "and_test"
+
     def to_ast(self) -> ast.expr:
         return self.rhs.to_ast()
 
 
 @dataclass(kw_only=True)
-class OrTest(Node[Literal["or_test"]]):
+class OrTest(Node):
     rhs: AndTest
 
+    @property
     @override
+    def type(self) -> str:
+        return "or_test"
+
     def to_ast(self) -> ast.expr:
         return self.rhs.to_ast()
 
 
 @dataclass(kw_only=True)
-class StarredExpression(Node[Literal["starred_expression"]]):
+class StarredExpression(Node):
     x: OrTest
 
+    @property
     @override
+    def type(self) -> str:
+        return "starred_expression"
+
     def to_ast(self) -> ast.expr:
         return self.x.to_ast()
 
 
 @dataclass(kw_only=True)
-class ExpressionStmt(Node[Literal["expression_stmt"]]):
+class ExpressionStmt(Node):
     x: StarredExpression
 
+    @property
     @override
+    def type(self) -> str:
+        return "expression_stmt"
+
     def to_ast(self) -> ast.Expr:
         return ast.Expr(value=self.x.to_ast())
 
 
 @dataclass(kw_only=True)
-class Target(Node[Literal["target"]]):
+class Target(Node):
     x: Token
 
+    @property
     @override
+    def type(self) -> str:
+        return "target"
+
     def to_ast(self) -> ast.Name:
         return ast.Name(id=self.x.nfkd(), ctx=ast.Store())
 
 
 @dataclass(kw_only=True)
-class TargetList(Node[Literal["target_list"]]):
+class TargetList(Node):
     xs: list[Target]
 
+    @property
     @override
+    def type(self) -> str:
+        return "target_list"
+
     def to_ast(self) -> ast.Name:
         assert len(self.xs) == 1
         return self.xs[0].to_ast()
 
 
 @dataclass(kw_only=True)
-class AssignmentStmt(Node[Literal["assignment_stmt"]]):
+class AssignmentStmt(Node):
     targets: list[TargetList]
     value: StarredExpression
 
+    @property
     @override
+    def type(self) -> str:
+        return "assignment_stmt"
+
     def to_ast(self) -> ast.Assign:
         targets: list[ast.expr] = []
         for x in self.targets:
@@ -408,57 +493,81 @@ class AssignmentStmt(Node[Literal["assignment_stmt"]]):
 
 
 @dataclass(kw_only=True)
-class AugTarget(Node[Literal["augtarget"]]):
+class AugTarget(Node):
     x: Token
 
+    @property
     @override
+    def type(self) -> str:
+        return "augtarget"
+
     def to_ast(self) -> ast.Name:
         return ast.Name(id=self.x.nfkd(), ctx=ast.Store())
 
 
 @dataclass(kw_only=True)
-class ConditionalExpression(Node[Literal["conditional_expression"]]):
+class ConditionalExpression(Node):
     then: OrTest
 
+    @property
     @override
+    def type(self) -> str:
+        return "conditional_expression"
+
     def to_ast(self) -> ast.expr:
         return self.then.to_ast()
 
 
 @dataclass(kw_only=True)
-class AssignmentExpression(Node[Literal["assignment_expression"]]):
+class AssignmentExpression(Node):
     value: "Expression"
 
+    @property
     @override
+    def type(self) -> str:
+        return "assignment_expression"
+
     def to_ast(self) -> ast.expr:
         return self.value.to_ast()
 
 
 @dataclass(kw_only=True)
-class Expression(Node[Literal["expression"]]):
+class Expression(Node):
     x: ConditionalExpression
 
+    @property
     @override
+    def type(self) -> str:
+        return "expression"
+
     def to_ast(self) -> ast.expr:
         return self.x.to_ast()
 
 
 @dataclass(kw_only=True)
-class ExpressionList(Node[Literal["expression_list"]]):
+class ExpressionList(Node):
     xs: list[Expression]
 
+    @property
     @override
+    def type(self) -> str:
+        return "expression_list"
+
     def to_ast(self) -> ast.expr:
         return self.xs[0].to_ast()
 
 
 @dataclass(kw_only=True)
-class AugmentedAssignmentStmt(Node[Literal["augmented_assignment_stmt"]]):
+class AugmentedAssignmentStmt(Node):
     target: AugTarget
     op: Token
     value: ExpressionList
 
+    @property
     @override
+    def type(self) -> str:
+        return "augmented_assignment_stmt"
+
     def to_ast(self) -> ast.AugAssign:
         target = self.target.to_ast()
 
@@ -478,59 +587,82 @@ class AugmentedAssignmentStmt(Node[Literal["augmented_assignment_stmt"]]):
 
 
 @dataclass(kw_only=True)
-class ReturnStmt(Node[Literal["return_stmt"]]):
+class ReturnStmt(Node):
     value: ExpressionList | None
 
+    @property
     @override
+    def type(self) -> str:
+        return "return_stmt"
+
     def to_ast(self) -> ast.Return:
         return ast.Return(value=self.value.to_ast() if self.value is not None else None)
 
 
 @dataclass(kw_only=True)
-class SimpleStmt(Node[Literal["simple_stmt"]]):
+class SimpleStmt(Node):
     x: ExpressionStmt | AssignmentStmt | AugmentedAssignmentStmt | ReturnStmt
 
+    @property
     @override
+    def type(self) -> str:
+        return "simple_stmt"
+
     def to_ast(self) -> ast.stmt:
         return self.x.to_ast()
 
 
 @dataclass(kw_only=True)
-class StmtList(Node[Literal["stmt_list"]]):
+class StmtList(Node):
     xs: list[SimpleStmt]
 
+    @property
     @override
-    def to_ast(self) -> ast.stmt:
-        assert len(self.xs) == 1
-        return self.xs[0].to_ast()
+    def type(self) -> str:
+        return "stmt_list"
+
+    def to_ast(self) -> list[ast.stmt]:
+        return [x.to_ast() for x in self.xs]
 
 
 @dataclass(kw_only=True)
-class IfStmt(Node[Literal["if_stmt"]]):
+class IfStmt(Node):
     cond: AssignmentExpression
     then: "Suite"
 
+    @property
     @override
+    def type(self) -> str:
+        return "if_stmt"
+
     def to_ast(self) -> ast.If:
-        return ast.If(test=self.cond.to_ast(), body=[self.then.to_ast()])
+        return ast.If(test=self.cond.to_ast(), body=self.then.to_ast())
 
 
 @dataclass(kw_only=True)
-class WhileStmt(Node[Literal["while_stmt"]]):
+class WhileStmt(Node):
     cond: AssignmentExpression
     loop: "Suite"
 
+    @property
     @override
+    def type(self) -> str:
+        return "while_stmt"
+
     def to_ast(self) -> ast.While:
-        return ast.While(test=self.cond.to_ast(), body=[self.loop.to_ast()])
+        return ast.While(test=self.cond.to_ast(), body=self.loop.to_ast())
 
 
 @dataclass(kw_only=True)
-class Defparameter(Node[Literal["defparameter"]]):
+class Defparameter(Node):
     name: Token
     annotation: Expression | None
 
+    @property
     @override
+    def type(self) -> str:
+        return "defparameter"
+
     def to_ast(self) -> ast.arg:
         return ast.arg(
             arg=self.name.nfkd(),
@@ -541,27 +673,35 @@ class Defparameter(Node[Literal["defparameter"]]):
 
 
 @dataclass(kw_only=True)
-class ParameterList(Node[Literal["parameter_list"]]):
+class ParameterList(Node):
     regular_params: list[Defparameter]
 
+    @property
     @override
+    def type(self) -> str:
+        return "parameter_list"
+
     def to_ast(self) -> ast.arguments:
         return ast.arguments(args=[x.to_ast() for x in self.regular_params])
 
 
 @dataclass(kw_only=True)
-class Funcdef(Node[Literal["funcdef"]]):
+class Funcdef(Node):
     name: Token
     params: ParameterList
     return_value: Expression | None
     body: "Suite"
 
+    @property
     @override
+    def type(self) -> str:
+        return "funcdef"
+
     def to_ast(self) -> ast.FunctionDef:
         return ast.FunctionDef(
             name=self.name.nfkd(),
             args=self.params.to_ast(),
-            body=[self.body.to_ast()],
+            body=self.body.to_ast(),
             returns=self.return_value.to_ast()
             if self.return_value is not None
             else None,
@@ -569,48 +709,67 @@ class Funcdef(Node[Literal["funcdef"]]):
 
 
 @dataclass(kw_only=True)
-class CompoundStmt(Node[Literal["compound_stmt"]]):
+class CompoundStmt(Node):
     x: IfStmt | WhileStmt | Funcdef
 
+    @property
     @override
+    def type(self) -> str:
+        return "compound_stmt"
+
     def to_ast(self) -> ast.stmt:
         return self.x.to_ast()
 
 
 @dataclass(kw_only=True)
-class Statement(Node[Literal["statement"]]):
+class Statement(Node):
     x: StmtList | CompoundStmt
 
+    @property
     @override
-    def to_ast(self) -> ast.stmt:
+    def type(self) -> str:
+        return "statement"
+
+    def to_ast(self) -> list[ast.stmt]:
+        if isinstance(self.x, CompoundStmt):
+            return [self.x.to_ast()]
+
         return self.x.to_ast()
 
 
 @dataclass(kw_only=True)
-class Suite(Node[Literal["suite"]]):
+class Suite(Node):
     xs: StmtList | list[Statement]
 
+    @property
     @override
-    def to_ast(self) -> ast.stmt:
+    def type(self) -> str:
+        return "suite"
+
+    def to_ast(self) -> list[ast.stmt]:
         if isinstance(self.xs, StmtList):
             return self.xs.to_ast()
 
-        assert len(self.xs) == 1
-        return self.xs[0].to_ast()
+        res: list[ast.stmt] = []
+        for x in self.xs:
+            res.extend(x.to_ast())
+        return res
 
 
 @dataclass(kw_only=True)
-class FileInput(Node[Literal["file_input"]]):
+class FileInput(Node):
     xs: list[Statement]
 
+    @property
     @override
+    def type(self) -> str:
+        return "file_input"
+
     def to_ast(self) -> ast.Module:
         body: list[ast.stmt] = []
 
         for x in self.xs:
-            cur = x.to_ast()
-            assert isinstance(cur, ast.stmt)
-            body.append(cur)
+            body.extend(x.to_ast())
 
         return ast.Module(body=body)
 
@@ -619,9 +778,7 @@ type ParseFunctionIn[**T, R] = Callable[Concatenate[Parser, T], R]
 type ParseFunctionOut[**T, R] = Callable[Concatenate[Parser, T], R]
 
 
-def parse_function[**T, R: Node[str]](
-    f: ParseFunctionIn[T, R],
-) -> ParseFunctionOut[T, R]:
+def parse_function[**T, R: Node](f: ParseFunctionIn[T, R]) -> ParseFunctionOut[T, R]:
     @wraps(f)
     def res(self: "Parser", *args: T.args, **kwargs: T.kwargs) -> R:
         siblings = self.children
@@ -649,8 +806,7 @@ class ParseFailedError(RuntimeError): ...
 class Parser:
     def __init__(self, *, lex: Lexer) -> None:
         self.lex: Lexer = lex
-        self.token_stack: list[Token] = []
-        self.children: list[Node[str] | Token] = []
+        self.children: list[Node | Token] = []
 
     @contextmanager
     def checkpoint(self) -> Generator[None]:
@@ -660,16 +816,12 @@ class Parser:
             yield
         except Exception:
             self.lex = old.lex
-            self.token_stack = old.token_stack
             self.children = old.children
 
             raise
 
     def tok(self) -> Token:
-        if len(self.token_stack) > 0:
-            res = self.token_stack.pop()
-        else:
-            res = self.lex.next()
+        res = self.lex.next()
 
         self.children.append(res)
         return res
@@ -689,18 +841,20 @@ class Parser:
     def expect(self, typ: str) -> Token:
         res = self.tok()
         if res.type != typ:
-            raise ParseFailedError(f"expected <{typ}>, found <{res.type}>")
+            raise ParseFailedError(f"expected <{typ}>, found <{res.type}> ({res})")
 
         return res
 
     def expect_operator(self, text: str) -> Token:
         res = self.tok()
         if res.type != "operator":
-            raise ParseFailedError(f"expected <operator {text}>, found <{res.type}>")
+            raise ParseFailedError(
+                f"expected <operator {text}>, found <{res.type}> ({res})"
+            )
 
         if res.text != text:
             raise ParseFailedError(
-                f"expected <operator {text}>, found <operator {res.text}>"
+                f"expected <operator {text}>, found <operator {res.text}> ({res})"
             )
 
         return res
@@ -708,11 +862,13 @@ class Parser:
     def expect_delimiter(self, text: str) -> Token:
         res = self.tok()
         if res.type != "delimiter":
-            raise ParseFailedError(f"expected <delimiter {text}>, found <{res.type}>")
+            raise ParseFailedError(
+                f"expected <delimiter {text}>, found <{res.type}> ({res})"
+            )
 
         if res.text != text:
             raise ParseFailedError(
-                f"expected <delimiter {text}>, found <delimiter {res.text}>"
+                f"expected <delimiter {text}>, found <delimiter {res.text}> ({res})"
             )
 
         return res
@@ -720,33 +876,35 @@ class Parser:
     def expect_identifier(self, text: str) -> Token:
         res = self.tok()
         if res.type != "identifier":
-            raise ParseFailedError(f"expected <identifier {text}>, found <{res.type}>")
+            raise ParseFailedError(
+                f"expected <identifier {text}>, found <{res.type}> ({res})"
+            )
 
         if res.text != text:
             raise ParseFailedError(
-                f"expected <identifier {text}>, found <identifier {res.text}>"
+                f"expected <identifier {text}>, found <identifier {res.text}> ({res})"
             )
 
         return res
 
     @parse_function
     def literal(self) -> AstLiteral:
-        return AstLiteral(type="literal", x=self.expect("decinteger"))
+        return AstLiteral(x=self.expect("decinteger"))
 
     @parse_function
     def atom(self) -> Atom:
         ident = self.opt("identifier")
         if ident is not None:
             if ident.text in {"True", "False", "None"}:
-                return Atom(type="atom", x=AstLiteral(type="literal", x=ident))
+                return Atom(x=AstLiteral(x=ident))
 
-            return Atom(type="atom", x=ident)
+            return Atom(x=ident)
 
-        return Atom(type="atom", x=self.literal())
+        return Atom(x=self.literal())
 
     @parse_function
     def primary(self) -> Primary:
-        res = Primary(type="primary", x=self.atom())
+        res = Primary(x=self.atom())
 
         while True:
             try:
@@ -773,10 +931,7 @@ class Parser:
 
                     _ = self.expect_delimiter(")")
 
-                    res = Primary(
-                        type="primary",
-                        x=Call(type="call", func=res, positional_args=positional_args),
-                    )
+                    res = Primary(x=Call(func=res, positional_args=positional_args))
             except ParseFailedError:
                 break
 
@@ -784,15 +939,15 @@ class Parser:
 
     @parse_function
     def power(self) -> Power:
-        return Power(type="power", x=self.primary())
+        return Power(x=self.primary())
 
     @parse_function
     def u_expr(self) -> UExpr:
-        return UExpr(type="u_expr", x=self.power())
+        return UExpr(x=self.power())
 
     @parse_function
     def m_expr_base(self) -> MExpr:
-        return MExpr(type="m_expr", lhs=None, op=None, rhs=self.u_expr())
+        return MExpr(lhs=None, op=None, rhs=self.u_expr())
 
     @parse_function
     def m_expr(self) -> MExpr:
@@ -813,14 +968,14 @@ class Parser:
 
             rhs = self.u_expr()
 
-            lhs = MExpr(type="m_expr", lhs=lhs, op=op, rhs=rhs)
+            lhs = MExpr(lhs=lhs, op=op, rhs=rhs)
             lhs.children = self.children
 
             self.children = [lhs]
 
     @parse_function
     def a_expr_base(self) -> AExpr:
-        return AExpr(type="a_expr", lhs=None, op=None, rhs=self.m_expr())
+        return AExpr(lhs=None, op=None, rhs=self.m_expr())
 
     @parse_function
     def a_expr(self) -> AExpr:
@@ -838,26 +993,26 @@ class Parser:
 
             rhs = self.m_expr()
 
-            lhs = AExpr(type="a_expr", lhs=lhs, op=op, rhs=rhs)
+            lhs = AExpr(lhs=lhs, op=op, rhs=rhs)
             lhs.children = self.children
 
             self.children = [lhs]
 
     @parse_function
     def shift_expr(self) -> ShiftExpr:
-        return ShiftExpr(type="shift_expr", rhs=self.a_expr())
+        return ShiftExpr(rhs=self.a_expr())
 
     @parse_function
     def and_expr(self) -> AndExpr:
-        return AndExpr(type="and_expr", rhs=self.shift_expr())
+        return AndExpr(rhs=self.shift_expr())
 
     @parse_function
     def xor_expr(self) -> XorExpr:
-        return XorExpr(type="xor_expr", rhs=self.and_expr())
+        return XorExpr(rhs=self.and_expr())
 
     @parse_function
     def or_expr(self) -> OrExpr:
-        return OrExpr(type="or_expr", rhs=self.xor_expr())
+        return OrExpr(rhs=self.xor_expr())
 
     @parse_function
     def comparison(self) -> Comparison:
@@ -888,45 +1043,43 @@ class Parser:
 
                 break
 
-        return Comparison(type="comparison", lhs=lhs, ops=ops, rhs=rhs)
+        return Comparison(lhs=lhs, ops=ops, rhs=rhs)
 
     @parse_function
     def not_test(self) -> NotTest:
-        return NotTest(type="not_test", x=self.comparison())
+        return NotTest(x=self.comparison())
 
     @parse_function
     def and_test(self) -> AndTest:
-        return AndTest(type="and_test", rhs=self.not_test())
+        return AndTest(rhs=self.not_test())
 
     @parse_function
     def or_test(self) -> OrTest:
-        return OrTest(type="or_test", rhs=self.and_test())
+        return OrTest(rhs=self.and_test())
 
     @parse_function
     def starred_expression(self) -> StarredExpression:
-        return StarredExpression(type="starred_expression", x=self.or_test())
+        return StarredExpression(x=self.or_test())
 
     @parse_function
     def conditional_expression(self) -> ConditionalExpression:
-        return ConditionalExpression(type="conditional_expression", then=self.or_test())
+        return ConditionalExpression(then=self.or_test())
 
     @parse_function
     def assignment_expression(self) -> AssignmentExpression:
-        return AssignmentExpression(
-            type="assignment_expression", value=self.expression()
-        )
+        return AssignmentExpression(value=self.expression())
 
     @parse_function
     def expression(self) -> Expression:
-        return Expression(type="expression", x=self.conditional_expression())
+        return Expression(x=self.conditional_expression())
 
     @parse_function
     def expression_list(self) -> ExpressionList:
-        return ExpressionList(type="expression_list", xs=[self.expression()])
+        return ExpressionList(xs=[self.expression()])
 
     @parse_function
     def target(self) -> Target:
-        return Target(type="target", x=self.expect("identifier"))
+        return Target(x=self.expect("identifier"))
 
     @parse_function
     def target_list(self) -> TargetList:
@@ -951,7 +1104,7 @@ class Parser:
         except ParseFailedError:
             ...
 
-        return TargetList(type="target_list", xs=xs)
+        return TargetList(xs=xs)
 
     @parse_function
     def assignment_stmt(self) -> AssignmentStmt:
@@ -972,13 +1125,11 @@ class Parser:
                 break
 
         _ = self.opt("whitespace")
-        return AssignmentStmt(
-            type="assignment_stmt", targets=targets, value=self.starred_expression()
-        )
+        return AssignmentStmt(targets=targets, value=self.starred_expression())
 
     @parse_function
     def aug_target(self) -> AugTarget:
-        return AugTarget(type="augtarget", x=self.expect("identifier"))
+        return AugTarget(x=self.expect("identifier"))
 
     @parse_function
     def augmented_assignment_stmt(self) -> AugmentedAssignmentStmt:
@@ -993,15 +1144,12 @@ class Parser:
 
         _ = self.opt("whitespace")
         return AugmentedAssignmentStmt(
-            type="augmented_assignment_stmt",
-            target=target,
-            op=op,
-            value=self.expression_list(),
+            target=target, op=op, value=self.expression_list()
         )
 
     @parse_function
     def expression_stmt(self) -> ExpressionStmt:
-        return ExpressionStmt(type="expression_stmt", x=self.starred_expression())
+        return ExpressionStmt(x=self.starred_expression())
 
     @parse_function
     def return_stmt(self) -> ReturnStmt:
@@ -1015,37 +1163,35 @@ class Parser:
         except ParseFailedError:
             pass
 
-        return ReturnStmt(type="return_stmt", value=value)
+        return ReturnStmt(value=value)
 
     @parse_function
     def simple_stmt(self) -> SimpleStmt:
         try:
             with self.checkpoint():
-                return SimpleStmt(type="simple_stmt", x=self.assignment_stmt())
+                return SimpleStmt(x=self.assignment_stmt())
         except ParseFailedError:
             pass
 
         try:
             with self.checkpoint():
-                return SimpleStmt(type="simple_stmt", x=self.return_stmt())
+                return SimpleStmt(x=self.return_stmt())
         except ParseFailedError:
             pass
 
         try:
             with self.checkpoint():
-                return SimpleStmt(
-                    type="simple_stmt", x=self.augmented_assignment_stmt()
-                )
+                return SimpleStmt(x=self.augmented_assignment_stmt())
         except ParseFailedError:
             pass
 
         # note(maximsmol): must be after all the statements containing keywords
         # or it will parse the keyword as an identifier
-        return SimpleStmt(type="simple_stmt", x=self.expression_stmt())
+        return SimpleStmt(x=self.expression_stmt())
 
     @parse_function
     def stmt_list(self) -> StmtList:
-        return StmtList(type="stmt_list", xs=[self.simple_stmt()])
+        return StmtList(xs=[self.simple_stmt()])
 
     @parse_function
     def if_stmt(self) -> IfStmt:
@@ -1057,7 +1203,7 @@ class Parser:
         _ = self.opt("whitespace")
         then = self.suite()
 
-        return IfStmt(type="if_stmt", cond=cond, then=then)
+        return IfStmt(cond=cond, then=then)
 
     @parse_function
     def while_stmt(self) -> WhileStmt:
@@ -1069,7 +1215,7 @@ class Parser:
         _ = self.opt("whitespace")
         loop = self.suite()
 
-        return WhileStmt(type="while_stmt", cond=cond, loop=loop)
+        return WhileStmt(cond=cond, loop=loop)
 
     @parse_function
     def defparameter(self) -> Defparameter:
@@ -1085,7 +1231,7 @@ class Parser:
         except ParseFailedError:
             ...
 
-        return Defparameter(type="defparameter", name=name, annotation=annotation)
+        return Defparameter(name=name, annotation=annotation)
 
     @parse_function
     def parameter_list(self) -> ParameterList:
@@ -1108,7 +1254,7 @@ class Parser:
         except ParseFailedError:
             ...
 
-        return ParameterList(type="parameter_list", regular_params=regular_params)
+        return ParameterList(regular_params=regular_params)
 
     @parse_function
     def funcdef(self) -> Funcdef:
@@ -1137,29 +1283,23 @@ class Parser:
         _ = self.opt("whitespace")
         body = self.suite()
 
-        return Funcdef(
-            type="funcdef",
-            name=name,
-            params=params,
-            return_value=return_value,
-            body=body,
-        )
+        return Funcdef(name=name, params=params, return_value=return_value, body=body)
 
     @parse_function
     def compound_stmt(self) -> CompoundStmt:
         try:
             with self.checkpoint():
-                return CompoundStmt(type="compound_stmt", x=self.if_stmt())
+                return CompoundStmt(x=self.if_stmt())
         except ParseFailedError:
             pass
 
         try:
             with self.checkpoint():
-                return CompoundStmt(type="compound_stmt", x=self.while_stmt())
+                return CompoundStmt(x=self.while_stmt())
         except ParseFailedError:
             pass
 
-        return CompoundStmt(type="compound_stmt", x=self.funcdef())
+        return CompoundStmt(x=self.funcdef())
 
     @parse_function
     def statement(self) -> Statement:
@@ -1167,11 +1307,11 @@ class Parser:
             with self.checkpoint():
                 x = self.stmt_list()
                 _ = self.expect("newline")
-                return Statement(type="statement", x=x)
+                return Statement(x=x)
         except ParseFailedError:
             pass
 
-        return Statement(type="statement", x=self.compound_stmt())
+        return Statement(x=self.compound_stmt())
 
     @parse_function
     def suite(self) -> Suite:
@@ -1179,7 +1319,7 @@ class Parser:
             with self.checkpoint():
                 x = self.stmt_list()
                 _ = self.expect("newline")
-                return Suite(type="suite", xs=x)
+                return Suite(xs=x)
         except ParseFailedError:
             pass
 
@@ -1190,6 +1330,7 @@ class Parser:
         while True:
             try:
                 with self.checkpoint():
+                    _ = self.opt("whitespace")
                     xs.append(self.statement())
             except ParseFailedError:
                 break
@@ -1203,7 +1344,7 @@ class Parser:
                 break
         _ = self.expect("dedent")
 
-        return Suite(type="suite", xs=xs)
+        return Suite(xs=xs)
 
     @parse_function
     def file_input(self) -> FileInput:
@@ -1214,7 +1355,7 @@ class Parser:
                 break
             xs.append(self.statement())
 
-        return FileInput(type="file_input", xs=xs)
+        return FileInput(xs=xs)
 
     @contextmanager
     def parse_wrapper(self) -> Generator[None]:
@@ -1222,8 +1363,6 @@ class Parser:
             yield
         except Exception as e:
             idx = None
-            if len(self.token_stack) > 0:
-                idx = self.token_stack[-1].start.idx
 
             l, cursor = self.lex.debug_pos(idx=idx)
             e.add_note(l)
