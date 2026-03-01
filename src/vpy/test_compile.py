@@ -1,25 +1,14 @@
-import ctypes
-from ctypes import (
-    CFUNCTYPE,
-    POINTER,
-    Structure,
-    c_bool,
-    c_double,
-    c_int64,
-    c_uint8,
-    c_uint64,
-    cast,
-    pointer,
-)
+from ctypes import CFUNCTYPE, c_int64
 from pathlib import Path
 from textwrap import dedent
 
 import llvmlite
 
-from vpy.compile import Compiler, Scope
-
+from .compile import Compiler, Scope, prelude
 from .lex import Lexer
 from .parse import Parser
+from .test_interpret import reference_eval
+from .values import VpyValue
 
 # https://llvmlite.readthedocs.io/en/stable/user-guide/deprecation.html#deprecation-of-typed-pointers
 llvmlite.opaque_pointers_enabled = True
@@ -55,89 +44,23 @@ def execute(engine: llvm.ExecutionEngine, code: str) -> int:
         engine.remove_module(mod)
 
 
-class CompilerValue(Structure):
-    _fields_ = [("type_id", c_uint64), ("data", POINTER(c_uint8))]
-
-
-class CompilerValueDataInt(Structure):
-    _fields_ = [("value", c_int64)]
-
-
-class CompilerValueDataBool(Structure):
-    _fields_ = [("value", c_bool)]
-
-
-class CompilerValueDataFloat(Structure):
-    _fields_ = [("value", c_double)]
-
-
-def to_python(ptr: int) -> object:
-    val = CompilerValue.from_address(ptr)
-    match val.type_id:
-        case 0:
-            return None
-        case 1:
-            data = cast(pointer(val.data), POINTER(CompilerValueDataInt)).contents
-            return data.value
-        case 2:
-            data = cast(pointer(val.data), POINTER(CompilerValueDataBool)).contents
-            return data.value
-        case 3:
-            data = cast(pointer(val.data), POINTER(CompilerValueDataFloat)).contents
-            return data.value
-        case x:
-            raise RuntimeError(f"unknown compiler value type: {x}")
-
-
-def main() -> None:
-    engine = setup_llvm()
-
-    # src = "1 + 2 + 3"
-    # src = "a = 123"
-    # src = dedent("""
-    #     a = 123
-    #     a + 1
-    # """)[1:]
-    # src = "10 % 6"
-    # src = "1 == 1"
-    # src = "2 * 5"
-    # src = dedent("""
-    #     a = 1
-    #     a += 2
-    # """)[1:]
-    # src = "True"
-    # src = dedent("""
-    #     a = 10
-    #     if False:
-    #         a = 20
-    #     a
-    # """)[1:]
-    # src = dedent("""
-    #     a = 2
-    #     while a <= 10:
-    #         a = a * a
-    #     a
-    # """)[1:]
-    # src = dedent("""
-    #     def f(x: int) -> int:
-    #         return x + 10
-
-    #     f(10)
-    # """)[1:]
-    src = dedent("""
-        def f(x: int) -> int | float:
-            if x == 5:
-                return 123
-            return 0.999
-
-        f(10)
-    """)[1:]
-    # src = Path("tests/problems_99/p2.01_is_prime.py").read_text(encoding="utf-8")
-    # src = Path("tests/problems_99/p2.07_gcd.py").read_text(encoding="utf-8")
+def process(
+    *, engine: llvm.ExecutionEngine, src: str, print_llvm: bool = False
+) -> bool:
+    res = True
 
     l = Lexer(data=src)
     p = Parser(lex=l)
     ast = p.parse()
+
+    cur = p.tok()
+    if cur.type != "endmarker":
+        print("!!! Leftover tokens:")
+        while cur.type != "endmarker":
+            print(cur)
+            cur = p.tok()
+
+        res = False
 
     c = Compiler()
 
@@ -147,21 +70,103 @@ def main() -> None:
     root.compile(ast)
 
     llvm_ir = "\n\n".join("\n".join(s.lines) for s in c.scopes)
-    print(llvm_ir)
-
-    res = execute(engine, llvm_ir)
-
-    print()
-    print(f"module_root() = 0x{res:x}")
-    print(to_python(res))
-
-    cur = p.tok()
-    if cur.type != "endmarker":
+    if print_llvm:
+        print(llvm_ir[len(prelude)+1 :])
         print()
-        print("!!! Leftover tokens:")
-        while cur.type != "endmarker":
-            print(cur)
-            cur = p.tok()
+        print(f"IR size: {len(llvm_ir)}")
+
+    ours = execute(engine, llvm_ir)
+    reference = reference_eval(src)
+
+    # todo(maximsmol): check locals/globals/intermediate results
+    ours_py = VpyValue.derive_type(0).from_address(ours).to_python()
+    if type(ours_py) is not type(reference.value) or ours_py != reference.value:
+        print("!!! Mismatch")
+        print("Ours:")
+        print(ours_py)
+        print()
+        print("Reference:")
+        print(reference.value)
+        print()
+        res = False
+
+    return res
+
+
+def main() -> None:
+    engine = setup_llvm()
+
+    # todo(maximsmol): support modules that do not end in an expression
+
+    assert process(engine=engine, src="1 + 2 + 3")
+    # assert process(engine=engine, src="a = 123")
+    assert process(
+        engine=engine,
+        src=dedent("""
+            a = 123
+            a + 1
+        """)[1:],
+    )
+    assert process(engine=engine, src="10 % 6")
+    assert process(engine=engine, src="1 == 1")
+    assert process(engine=engine, src="2 * 5")
+    # assert process(
+    #     engine=engine,
+    #     src=dedent("""
+    #         a = 1
+    #         a += 2
+    #     """)[1:],
+    # )
+    assert process(engine=engine, src="True")
+    assert process(
+        engine=engine,
+        src=dedent("""
+            a = 10
+            if False:
+                a = 20
+            a
+        """)[1:],
+    )
+    assert process(
+        engine=engine,
+        src=dedent("""
+            a = 2
+            while a <= 10:
+                a = a * a
+            a
+        """)[1:],
+    )
+    assert process(
+        engine=engine,
+        src=dedent("""
+            def f(x: int) -> int:
+                return x + 10
+
+            f(10)
+        """)[1:],
+    )
+    assert process(
+        engine=engine,
+        src=dedent("""
+            def f(x: int) -> int | float:
+                if x == 5:
+                    return 123
+                return 0.999
+
+            f(10)
+        """)[1:],
+    )
+
+    print("Smoketest OK")
+
+    root_p = Path(__file__).parent.parent.parent / "tests/problems_99"
+
+    for f in root_p.iterdir():
+        print(f">>> {f.relative_to(root_p)}:")
+        ok = process(engine=engine, src=f.read_text(), print_llvm=True)
+        if not ok:
+            break
+        print("  OK")
 
 
 if __name__ == "__main__":

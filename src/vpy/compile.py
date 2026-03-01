@@ -4,8 +4,7 @@ from contextlib import contextmanager
 from copy import copy, deepcopy
 from dataclasses import dataclass, field
 
-from vpy.lex import Token
-
+from .lex import Token
 from .parse import (
     AExpr,
     AndExpr,
@@ -63,6 +62,112 @@ def llvmid(prefix: str, idx: int) -> str:
     return llvmstr(res)
 
 
+def struct_sizeof(x: str) -> str:
+    return f"""
+    %size_ptr = getelementptr {x}, ptr null, i64 1
+    %size = ptrtoint ptr %size_ptr to i64
+    """.lstrip().rstrip()
+
+
+prelude = rf"""
+declare ptr @malloc(i64)
+
+declare void @abort() noreturn
+declare i64 @puts(ptr)
+
+@str.error = constant [19 x i8] c"[panic] type error\00"
+
+%struct.value = type {{ i64, [ 0 x i8 ] }}
+
+define ptr @make_none() {{
+    {struct_sizeof("{i64}")}
+
+    %res = call ptr @malloc(i64 %size)
+    store i64 0, ptr %res
+
+    ret ptr %res
+}}
+
+define ptr @make_int(i64 %x) {{
+    {struct_sizeof("{i64, i64}")}
+
+    %res = call ptr @malloc(i64 %size)
+    store i64 1, ptr %res
+
+    %data_ptr = getelementptr %struct.value, ptr %res, i64 0, i32 1
+    store i64 %x, ptr %data_ptr
+
+    ret ptr %res
+}}
+
+define ptr @make_bool(i8 %x) {{
+    {struct_sizeof("{i64, i8}")}
+
+    %res = call ptr @malloc(i64 %size)
+    store i64 2, ptr %res
+
+    %data_ptr = getelementptr %struct.value, ptr %res, i64 0, i32 1
+    store i8 %x, ptr %data_ptr
+
+    ret ptr %res
+}}
+
+define ptr @make_float(double %x) {{
+    {struct_sizeof("{i64, double}")}
+
+    %res = call ptr @malloc(i64 %size)
+    store i64 3, ptr %res
+
+    %data_ptr = getelementptr %struct.value, ptr %res, i64 0, i32 1
+    store double %x, ptr %data_ptr
+
+    ret ptr %res
+}}
+
+define void @expect_type(ptr %x, i64 %expected) {{
+    %type_id = load i64, ptr %x
+
+    %cond_i1 = icmp eq i64 %type_id, %expected
+    br i1 %cond_i1, label %ok, label %crash
+
+    crash:
+    call i64 @puts(ptr @str.error)
+    call void @abort()
+    br label %ok
+
+    ok:
+    ret void
+}}
+
+define i64 @expect_int(ptr %x) {{
+    call void @expect_type(ptr %x, i64 1)
+
+    %ptr = getelementptr %struct.value, ptr %x, i64 0, i32 1
+    %res = load i64, ptr %ptr
+
+    ret i64 %res
+}}
+
+define i8 @expect_bool(ptr %x) {{
+    call void @expect_type(ptr %x, i64 2)
+
+    %ptr = getelementptr %struct.value, ptr %x, i64 0, i32 1
+    %res = load i8, ptr %ptr
+
+    ret i8 %res
+}}
+
+define double @expect_float(ptr %x) {{
+    call void @expect_type(ptr %x, i64 3)
+
+    %ptr = getelementptr %struct.value, ptr %x, i64 0, i32 1
+    %res = load double, ptr %ptr
+
+    ret double %res
+}}
+"""
+
+
 @dataclass(kw_only=True)
 class Scope:
     compiler: "Compiler"
@@ -86,6 +191,10 @@ class Scope:
         self.var_idx += 1
 
         return llvmid(prefix, idx)
+
+    def next_id_derived(self, old: str, addon: str) -> str:
+        old_prefix = old.rsplit(".", 1)[0]
+        return self.next_id(prefix=f"{old_prefix}.{addon}")
 
     def emit_block(self, name: str) -> None:
         self.emit("")
@@ -333,14 +442,7 @@ class Scope:
 
     def compile(self, x: Node) -> None:
         if isinstance(x, FileInput):
-            self.emit("declare void @abort() noreturn")
-            self.emit("declare ptr @malloc(i64)")
-            self.emit("declare i64 @puts(ptr)")
-            self.emit("")
-            self.emit(r'@str.error = constant [19 x i8] c"[panic] type error\00"')
-            self.emit("")
-            self.emit("%struct.value = type { i64, [ 0 x i8 ] }")
-            self.emit("")
+            self.emit(prelude)
             self.emit("define ptr @module_root() {")
             with self.indent():
                 self.emit("start:")
@@ -580,110 +682,44 @@ class Scope:
         return res
 
     def make_none(self) -> str:
-        res = self.next_id(prefix="make_none.res")
-        self.emit(f"%{res} = call ptr @malloc(i64 %{self.struct_sizeof('{i64}')})")
-
-        self.emit(f"store i64 0, ptr %{res}")
+        res = self.next_id(prefix="none")
+        self.emit(f"%{res} = call ptr @make_none()")
 
         return res
 
     def make_int(self, x: str) -> str:
-
-        res = self.next_id(prefix="make_int.res")
-        self.emit(f"%{res} = call ptr @malloc(i64 %{self.struct_sizeof('{i64, i64}')})")
-
-        self.emit(f"store i64 1, ptr %{res}")
-
-        data_ptr = self.next_id(prefix="make_int.data_ptr")
-        self.emit(
-            f"%{data_ptr} = getelementptr %struct.value, ptr %{res}, i64 0, i32 1"
-        )
-        self.emit(f"store i64 %{x}, ptr %{data_ptr}")
+        res = self.next_id_derived(x, "$int")
+        self.emit(f"%{res} = call ptr @make_int(i64 %{x})")
 
         return res
 
     def make_bool(self, x: str) -> str:
-        res = self.next_id(prefix="make_bool.res")
-        self.emit(f"%{res} = call ptr @malloc(i64 %{self.struct_sizeof('{i64, i8}')})")
-
-        self.emit(f"store i64 2, ptr %{res}")
-
-        data_ptr = self.next_id(prefix="make_bool.data_ptr")
-        self.emit(
-            f"%{data_ptr} = getelementptr %struct.value, ptr %{res}, i64 0, i32 1"
-        )
-        self.emit(f"store i8 %{x}, ptr %{data_ptr}")
+        res = self.next_id_derived(x, "$bool")
+        self.emit(f"%{res} = call ptr @make_bool(i8 %{x})")
 
         return res
 
     def make_float(self, x: str) -> str:
-        res = self.next_id(prefix="make_float.res")
-        self.emit(
-            f"%{res} = call ptr @malloc(i64 %{self.struct_sizeof('{i64, double}')})"
-        )
-
-        self.emit(f"store i64 3, ptr %{res}")
-
-        data_ptr = self.next_id(prefix="make_float.data_ptr")
-        self.emit(
-            f"%{data_ptr} = getelementptr %struct.value, ptr %{res}, i64 0, i32 1"
-        )
-        self.emit(f"store double %{x}, ptr %{data_ptr}")
+        res = self.next_id_derived(x, "$float")
+        self.emit(f"%{res} = call ptr @make_float(double %{x})")
 
         return res
 
-    def expect_type(self, x: str, expected: int) -> None:
-        type_id = self.next_id(prefix="expect_int.type_id")
-        self.emit(f"%{type_id} = load i64, ptr %{x}")
-
-        cond_i1 = self.next_id(prefix="expect_type.cond_i1")
-        self.emit(f"%{cond_i1} = icmp eq i64 %{type_id}, {expected}")
-
-        ok_label = self.next_id(prefix="expect_type.ok")
-        crash_label = self.next_id(prefix="expect_type.crash")
-
-        self.emit(f"br i1 %{cond_i1}, label %{ok_label}, label %{crash_label}")
-        self.emit_block(crash_label)
-
-        self.emit("call i64 @puts(ptr @str.error)")
-        self.emit("call void @abort()")
-        self.emit(f"br label %{ok_label}")
-
-        self.emit_block(ok_label)
-
     def expect_int(self, x: str) -> str:
-        self.expect_type(x, 1)
-
-        # todo(maximsmol): throw on wrong type
-        ptr = self.next_id(prefix="expect_int.ptr")
-        self.emit(f"%{ptr} = getelementptr %struct.value, ptr %{x}, i64 0, i32 1")
-
-        res = self.next_id(prefix="expect_int.res")
-        self.emit(f"%{res} = load i64, ptr %{ptr}")
+        res = self.next_id_derived(x, "int")
+        self.emit(f"%{res} = call i64 @expect_int(ptr %{x})")
 
         return res
 
     def expect_bool(self, x: str) -> str:
-        self.expect_type(x, 2)
-
-        # todo(maximsmol): throw on wrong type
-        ptr = self.next_id(prefix="expect_bool.ptr")
-        self.emit(f"%{ptr} = getelementptr %struct.value, ptr %{x}, i64 0, i32 1")
-
-        res = self.next_id(prefix="expect_bool.res")
-        self.emit(f"%{res} = load i8, ptr %{ptr}")
+        res = self.next_id_derived(x, "bool")
+        self.emit(f"%{res} = call i8 @expect_bool(ptr %{x})")
 
         return res
 
     def expect_float(self, x: str) -> str:
-        self.expect_type(x, 3)
-
-        # todo(maximsmol): throw on wrong type
-        ptr = self.next_id(prefix="expect_float.ptr")
-        self.emit(f"%{ptr} = getelementptr %struct.value, ptr %{x}, i64 0, i32 1")
-
-        res = self.next_id(prefix="expect_float.res")
-        self.emit(f"%{res} = load double, ptr %{ptr}")
+        res = self.next_id_derived(x, "float")
+        self.emit(f"%{res} = call double @expect_float(ptr %{x})")
 
         return res
 

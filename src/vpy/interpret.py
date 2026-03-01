@@ -1,9 +1,7 @@
-import struct
 from dataclasses import dataclass, field
-from typing import Any, Literal, Self, override
+from typing import override
 
-from vpy.lex import Token
-
+from .lex import Token
 from .parse import (
     AExpr,
     AndExpr,
@@ -41,76 +39,13 @@ from .parse import (
     WhileStmt,
     XorExpr,
 )
-
-
-@dataclass(kw_only=True)
-class Value:
-    type_id: Literal["None", "int", "bool", "float", "function"]
-    _value: bytes
-
-    # from_*
-    @classmethod
-    def from_none(cls) -> Self:
-        return cls(type_id="None", _value=b"")
-
-    @classmethod
-    def from_int(cls, x: int) -> Self:
-        return cls(type_id="int", _value=x.to_bytes())
-
-    @classmethod
-    def from_bool(cls, x: bool) -> Self:  # noqa: FBT001
-        return cls(type_id="bool", _value=bytes([1 if x else 0]))
-
-    @classmethod
-    def from_float(cls, x: float) -> Self:
-        return cls(type_id="float", _value=struct.pack("d", x))
-
-    @classmethod
-    def from_function(cls, name: str) -> Self:
-        return cls(type_id="function", _value=name.encode())
-
-    # expect_*
-    def expect_none(self) -> None:
-        assert self.type_id == "None"
-
-    def expect_int(self) -> int:
-        assert self.type_id == "int"
-        return int.from_bytes(self._value)
-
-    def expect_bool(self) -> bool:
-        assert self.type_id == "bool"
-        return self._value[0] != 0
-
-    def expect_float(self) -> float:
-        assert self.type_id == "float"
-        return struct.unpack("d", self._value)[0]
-
-    def expect_function(self) -> str:
-        assert self.type_id == "function"
-        return self._value.decode()
-
-    def to_python(self, interpreter: "Interpreter") -> object:
-        match self.type_id:
-            case "None":
-                return self.expect_none()
-            case "int":
-                return self.expect_int()
-            case "bool":
-                return self.expect_bool()
-            case "float":
-                return self.expect_float()
-            case "function":
-                return interpreter.functions[self.expect_function()]
-            case _:
-                raise RuntimeError(
-                    f"value cannot be converted into a native representation: type_id={self.type_id}"
-                )
+from .values import VpyTypeId, VpyValue
 
 
 class FunctionReturn(Exception):  # noqa: N818
-    def __init__(self, value: Value) -> None:
+    def __init__(self, value: VpyValue) -> None:
         super().__init__(self)
-        self.value: Value = value
+        self.value: VpyValue = value
 
 
 @dataclass(kw_only=True)
@@ -126,15 +61,15 @@ class Function:
 class Scope:
     interpreter: "Interpreter"
 
-    locals: dict[str, Value] = field(default_factory=dict)
+    locals: dict[str, VpyValue] = field(default_factory=dict)
 
-    def resolve(self, x: str) -> Value:
+    def resolve(self, x: str) -> VpyValue:
         if x not in self.locals:
             raise RuntimeError(f"variable not defined: {x}")
 
         return self.locals[x]
 
-    def eval(self, x: Node) -> Value:
+    def eval(self, x: Node) -> VpyValue:
         if isinstance(x, ExpressionList):
             return self.eval(x.xs[0])
 
@@ -173,7 +108,7 @@ class Scope:
                 match op.text:
                     case "==":
                         match cur.type_id:
-                            case "int":
+                            case VpyTypeId.int:
                                 cond = cur.expect_int() == rhs.expect_int()
                             case _:
                                 raise RuntimeError(
@@ -187,10 +122,10 @@ class Scope:
                         )
 
                 if not cond:
-                    return Value.from_bool(False)  # noqa: FBT003
+                    return VpyValue.from_bool(False)  # noqa: FBT003
                 cur = rhs
 
-            return Value.from_bool(True)  # noqa: FBT003
+            return VpyValue.from_bool(True)  # noqa: FBT003
 
         if isinstance(x, OrExpr):
             return self.eval(x.rhs)
@@ -215,7 +150,7 @@ class Scope:
 
             match x.op.text:
                 case "+":
-                    return Value.from_int(lhs.expect_int() + rhs.expect_int())
+                    return VpyValue.from_int(lhs.expect_int() + rhs.expect_int())
 
                 case _:
                     raise NotImplementedError(f"unsupported operator: {x.op.text}")
@@ -231,10 +166,10 @@ class Scope:
 
             match x.op.text:
                 case "%":
-                    return Value.from_int(lhs.expect_int() % rhs.expect_int())
+                    return VpyValue.from_int(lhs.expect_int() % rhs.expect_int())
 
                 case "*":
-                    return Value.from_int(lhs.expect_int() * rhs.expect_int())
+                    return VpyValue.from_int(lhs.expect_int() * rhs.expect_int())
 
                 case _:
                     raise NotImplementedError(f"unsupported operator: {x.op.text}")
@@ -250,7 +185,7 @@ class Scope:
 
         if isinstance(x, Call):
             func_val = self.eval(x.func)
-            func = self.interpreter.functions[func_val.expect_function()]
+            func = self.interpreter.functions[func_val.interpreted_expect_function()]
 
             param_spec = func.data.params
             if len(x.positional_args) != len(param_spec.regular_params):
@@ -265,7 +200,7 @@ class Scope:
             except FunctionReturn as e:
                 return e.value
 
-            return Value.from_none()
+            return VpyValue.from_none()
 
         if isinstance(x, Atom):
             if isinstance(x.x, Token):
@@ -277,19 +212,19 @@ class Scope:
         if isinstance(x, AstLiteral):
             match x.x.type:
                 case "decinteger":
-                    return Value.from_int(int(x.x.text))
+                    return VpyValue.from_int(int(x.x.text))
 
                 case "floatnumber":
-                    return Value.from_float(float(x.x.text))
+                    return VpyValue.from_float(float(x.x.text))
 
                 case "identifier":
                     match x.x.text:
                         case "True":
-                            return Value.from_bool(True)  # noqa: FBT003
+                            return VpyValue.from_bool(True)  # noqa: FBT003
                         case "False":
-                            return Value.from_bool(False)  # noqa: FBT003
+                            return VpyValue.from_bool(False)  # noqa: FBT003
                         case "None":
-                            return Value.from_none()
+                            return VpyValue.from_none()
                         case _:
                             raise NotImplementedError(
                                 f"unknown named literal: {x.x.text}"
@@ -349,7 +284,7 @@ class Scope:
             name = x.name.nfkd()
             f_id = f"{idx}.{name}"
 
-            self.locals[name] = Value.from_function(f_id)
+            self.locals[name] = VpyValue.interpreted_from_function(f_id)
             self.interpreter.functions[f_id] = Function(data=x)
 
             return
@@ -383,7 +318,7 @@ class Scope:
 
             match x.op.text:
                 case "+=":
-                    self.locals[name] = Value.from_int(
+                    self.locals[name] = VpyValue.from_int(
                         cur.expect_int() + val.expect_int()
                     )
                 case _:
@@ -394,7 +329,7 @@ class Scope:
             return
 
         if isinstance(x, ReturnStmt):
-            value: Value = Value.from_none()
+            value: VpyValue = VpyValue.from_none()
             if x.value is not None:
                 value = self.eval(x.value)
             raise FunctionReturn(value)
