@@ -71,7 +71,7 @@ def process(
 
     llvm_ir = "\n\n".join("\n".join(s.lines) for s in c.scopes)
     if print_llvm:
-        print(llvm_ir[len(prelude)+1 :])
+        print(llvm_ir[len(prelude) + 1 :])
         print()
         print(f"IR size: {len(llvm_ir)}")
 
@@ -155,6 +155,13 @@ def main() -> None:
 
             f(10)
         """)[1:],
+    )
+    assert process(
+        engine=engine,
+        src=dedent(r"""
+            "hello \"quote\" \n world"
+        """)[1:],
+        print_llvm=True,
     )
 
     print("Smoketest OK")

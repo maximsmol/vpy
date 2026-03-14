@@ -177,6 +177,7 @@ class Scope:
     cur_block: str = "start"
 
     locals: dict[str, str] = field(default_factory=dict)
+    strings: dict[str, str] = field(default_factory=dict)
 
     @contextmanager
     def indent(self) -> Generator[None]:
@@ -392,6 +393,11 @@ class Scope:
                     self.emit(f"%{res_data} = bitcast double {x.x.text} to double")
 
                     res = self.make_float(res_data)
+                case "string":
+                    res = self.next_id(prefix="_const.data")
+                    self.emit(
+                        f"%{res} = bitcast ptr {self.strings[x.x.str_value()]} to ptr"
+                    )
                 case "identifier":
                     match x.x.text:
                         case "True":
@@ -440,9 +446,47 @@ class Scope:
             self.emit(f"ret ptr %{none}")
         self.emit("}")
 
+    def preprocess(self, x: Node) -> None:
+        q: list[Node] = [x]
+        while len(q) > 0:
+            cur = q.pop()
+
+            if isinstance(cur, AstLiteral) and cur.x.type == "string":
+                body = cur.x.str_value()
+                l = len(body)
+
+                encoded = "".join([
+                    chr(c)
+                    if ord(" ") <= c <= ord("~") and c != ord('"') and c != ord("\\")
+                    else f"\\{c:02X}"
+                    for c in body.encode()
+                ])
+
+                ident = self.next_id(prefix="str")
+                self.emit(
+                    rf"@{ident} = private unnamed_addr constant {{i64, {{i64, [{l} x i8]}}}} {{"
+                )
+                with self.indent():
+                    self.emit("i64 4,")
+                    self.emit(f"{{i64, [{l} x i8]}} {{")
+                    with self.indent():
+                        self.emit(f"i64 {l},")
+                        self.emit_unparse(cur)
+                        self.emit(f'[{l} x i8] c"{encoded}"')
+                    self.emit("}")
+                self.emit("}")
+                self.emit("")
+
+                self.strings[body] = f"@{ident}"
+
+            q.extend(i for i in cur.children if isinstance(i, Node))
+
     def compile(self, x: Node) -> None:
         if isinstance(x, FileInput):
             self.emit(prelude)
+
+            self.preprocess(x)
+
             self.emit("define ptr @module_root() {")
             with self.indent():
                 self.emit("start:")

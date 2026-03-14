@@ -217,6 +217,9 @@ class Scope:
                 case "floatnumber":
                     return VpyValue.from_float(float(x.x.text))
 
+                case "string":
+                    return VpyValue.from_str(x.x.str_value())
+
                 case "identifier":
                     match x.x.text:
                         case "True":

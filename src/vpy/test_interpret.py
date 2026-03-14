@@ -199,6 +199,11 @@ def main() -> None:
             f(10)
         """)[1:]
     )
+    assert process(
+        dedent(r"""
+            "hello \"quote\" \n world"
+        """)[1:]
+    )
 
     print("Smoketest OK")
 

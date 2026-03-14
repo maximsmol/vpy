@@ -1,3 +1,4 @@
+import re
 import token
 import unicodedata
 from copy import copy
@@ -12,6 +13,7 @@ from .grammar import floats as g_floats
 from .grammar import indentifiers as g_id
 from .grammar import integers as g_int
 from .grammar import operators as g_op
+from .grammar import strings as g_strings
 
 
 @dataclass(kw_only=True)
@@ -42,6 +44,47 @@ class Token:
     def nfkd(self) -> str:
         return unicodedata.normalize("NFKD", self.text)
 
+    def str_value(self) -> str:
+        res = self.text
+
+        raw = False
+        fmt = False
+        uni = False
+
+        mods_match = re.compile(f"^({g_strings.stringprefix})(.*)", re.VERBOSE).match(
+            res
+        )
+        if mods_match is not None:
+            mods = mods_match.group(0).lower()
+            res = mods_match.group(1)
+
+            raw = "r" in mods
+            fmt = "f" in mods
+            uni = "u" in mods
+
+        if self.text.startswith('"""'):
+            res = res.removeprefix('"""').removesuffix('"""')
+        elif self.text.startswith("''''"):
+            res = res.removeprefix("'''").removesuffix("'''")
+        elif self.text[0] in {'"', "'"}:
+            res = res[1:-1]
+
+        if not raw:
+            res = res.replace("\\\n", "")
+            res = res.replace(r"\\", "\\")
+            res = res.replace(r"\'", "'")
+            res = res.replace(r"\"", '"')
+            res = res.replace(r"\a", "\a")
+            res = res.replace(r"\b", "\b")
+            res = res.replace(r"\f", "\f")
+            res = res.replace(r"\n", "\n")
+            res = res.replace(r"\r", "\r")
+            res = res.replace(r"\t", "\t")
+            res = res.replace(r"\v", "\v")
+            # todo(maximsmol): support octals, hex, and unicode escapes
+
+        return res
+
     def token_info(self) -> TokenInfo | None:
         text = self.text
         end = self.end
@@ -49,6 +92,8 @@ class Token:
             end = copy(end)
             end.line -= 1
             end.col = self.start.col + max(len(self.text), 1)
+
+        # todo(maximsmol): support raw and format strings
 
         return TokenInfo(
             type={
@@ -62,6 +107,7 @@ class Token:
                 "delimiter": token.OP,
                 "indent": token.INDENT,
                 "dedent": token.DEDENT,
+                "string": token.STRING,
             }[self.type],
             string=text,
             start=self.start.tuple(),
@@ -80,6 +126,7 @@ toks: list[tuple[regex.Pattern[str], str]] = [
     (g_delim.delimiters_short_re, "delimiter"),
     (g_op.operator_short_re, "operator"),
     (g_id.identifier_re, "identifier"),
+    (g_strings.stringliteral_re, "string"),
 ]
 
 

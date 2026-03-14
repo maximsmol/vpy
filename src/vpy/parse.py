@@ -111,6 +111,9 @@ class AstLiteral(Node):
             case "floatnumber":
                 return ast.Constant(value=float(self.x.text))
 
+            case "string":
+                return ast.Constant(value=self.x.str_value())
+
             case "identifier":
                 match self.x.text:
                     case "True":
@@ -926,7 +929,7 @@ class Parser:
 
     @parse_function
     def literal(self) -> AstLiteral:
-        return AstLiteral(x=self.expect_any({"decinteger", "floatnumber"}))
+        return AstLiteral(x=self.expect_any({"decinteger", "floatnumber", "string"}))
 
     @parse_function
     def atom(self) -> Atom:

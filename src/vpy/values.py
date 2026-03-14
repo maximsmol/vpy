@@ -32,11 +32,34 @@ class VpyValueDataFloat(Structure):
     value: float
 
 
+class VpyValueDataString(Structure):
+    _fields_ = [("len", c_uint64)]
+    len: int
+    value: Array[c_uint8]
+
+    @classmethod
+    def derive_type(cls, l: int) -> type[Self]:
+        class Inner(cls):
+            _fields_ = [("value", c_uint8 * l)]
+
+        Inner.__name__ = f"{cls.__name__}[{l}]"
+        Inner.__qualname__ = Inner.__name__
+
+        return Inner
+
+    @classmethod
+    def from_str(cls, x: str) -> Self:
+        value = bytearray(x.encode())
+        l = len(value)
+        return cls.derive_type(l)(len=l, value=(c_uint8 * l).from_buffer(value))
+
+
 class VpyTypeId(int, Enum):
     none = 0
     int = 1
     bool = 2
     float = 3
+    str = 4
     function = 999
 
 
@@ -82,6 +105,13 @@ class VpyValue(Structure):
         )
 
     @classmethod
+    def from_str(cls, x: str) -> Self:
+        body = bytearray(VpyValueDataString.from_str(x))
+        return cls.derive_type(len(body))(
+            type_id=VpyTypeId.str.value, data=(c_uint8 * len(body)).from_buffer(body)
+        )
+
+    @classmethod
     def interpreted_from_function(cls, x: str) -> Self:
         body = bytearray(x.encode())
         return cls.derive_type(len(body))(
@@ -110,6 +140,16 @@ class VpyValue(Structure):
         data = cast(pointer(self.data), POINTER(VpyValueDataFloat)).contents
         return data.value
 
+    def expect_str(self) -> str:
+        assert self.type_id == VpyTypeId.str.value
+
+        data = cast(pointer(self.data), POINTER(VpyValueDataString)).contents
+        data = cast(
+            pointer(self.data), POINTER(VpyValueDataString.derive_type(data.len))
+        ).contents
+
+        return bytearray(data.value).decode()
+
     def interpreted_expect_function(self) -> str:
         assert self.type_id == VpyTypeId.function.value
 
@@ -125,6 +165,8 @@ class VpyValue(Structure):
                 return self.expect_bool()
             case VpyTypeId.float.value:
                 return self.expect_float()
+            case VpyTypeId.str.value:
+                return self.expect_str()
             case x:
                 raise RuntimeError(f"unknown compiler value type: {x}")
 
