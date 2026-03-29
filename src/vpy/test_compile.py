@@ -1,4 +1,4 @@
-from ctypes import CFUNCTYPE, c_int64
+from ctypes import CFUNCTYPE, POINTER
 from pathlib import Path
 from textwrap import dedent
 
@@ -28,9 +28,17 @@ def setup_llvm() -> llvm.ExecutionEngine:
     return llvm.create_mcjit_compiler(backing_mod, target_machine)
 
 
-def execute(engine: llvm.ExecutionEngine, code: str) -> int:
+def execute(
+    engine: llvm.ExecutionEngine, code: str, *, print_asm: bool = False
+) -> VpyValue:
     mod = llvm.parse_assembly(code)
     mod.verify()
+
+    if print_asm:
+        target = llvm.Target.from_default_triple()
+        target_machine = target.create_target_machine()
+        target_machine.set_asm_verbosity(True)
+        print(target_machine.emit_assembly(mod))
 
     engine.add_module(mod)
     try:
@@ -38,14 +46,18 @@ def execute(engine: llvm.ExecutionEngine, code: str) -> int:
         engine.run_static_constructors()
 
         func_ptr = engine.get_function_address("module_root")
-        cfunc = CFUNCTYPE(c_int64)(func_ptr)
-        return cfunc()
+        cfunc = CFUNCTYPE(POINTER(VpyValue))(func_ptr)
+        return cfunc().contents
     finally:
         engine.remove_module(mod)
 
 
 def process(
-    *, engine: llvm.ExecutionEngine, src: str, print_llvm: bool = False
+    *,
+    engine: llvm.ExecutionEngine,
+    src: str,
+    print_llvm: bool = False,
+    print_asm: bool = False,
 ) -> bool:
     res = True
 
@@ -75,11 +87,11 @@ def process(
         print()
         print(f"IR size: {len(llvm_ir)}")
 
-    ours = execute(engine, llvm_ir)
+    ours = execute(engine, llvm_ir, print_asm=print_asm)
     reference = reference_eval(src)
 
     # todo(maximsmol): check locals/globals/intermediate results
-    ours_py = VpyValue.derive_type(0).from_address(ours).to_python()
+    ours_py = ours.to_python()
     if type(ours_py) is not type(reference.value) or ours_py != reference.value:
         print("!!! Mismatch")
         print("Ours:")
@@ -161,7 +173,12 @@ def main() -> None:
         src=dedent(r"""
             "hello \"quote\" \n world"
         """)[1:],
-        print_llvm=True,
+    )
+    assert process(
+        engine=engine,
+        src=dedent(r"""
+            [[1], 0.9, [1, 2], True]
+        """)[1:],
     )
 
     print("Smoketest OK")

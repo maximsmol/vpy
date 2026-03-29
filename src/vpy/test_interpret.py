@@ -204,6 +204,11 @@ def main() -> None:
             "hello \"quote\" \n world"
         """)[1:]
     )
+    assert process(
+        dedent(r"""
+            [[1], 0.9, [1, 2], True]
+        """)[1:]
+    )
 
     print("Smoketest OK")
 

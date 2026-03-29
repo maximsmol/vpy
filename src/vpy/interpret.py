@@ -15,12 +15,15 @@ from .parse import (
     Comparison,
     CompoundStmt,
     ConditionalExpression,
+    Enclosure,
     Expression,
     ExpressionList,
     ExpressionStmt,
     FileInput,
+    FlexibleExpression,
     Funcdef,
     IfStmt,
+    ListDisplay,
     MExpr,
     Node,
     NotTest,
@@ -83,6 +86,9 @@ class Scope:
             return self.eval(x.value)
 
         if isinstance(x, StarredExpression):
+            return self.eval(x.x)
+
+        if isinstance(x, FlexibleExpression):
             return self.eval(x.x)
 
         if isinstance(x, OrTest):
@@ -178,6 +184,12 @@ class Scope:
             return self.eval(x.x)
 
         if isinstance(x, Power):
+            return self.eval(x.x)
+
+        if isinstance(x, ListDisplay):
+            return VpyValue.from_list([self.eval(i) for i in x.xs])
+
+        if isinstance(x, Enclosure):
             return self.eval(x.x)
 
         if isinstance(x, Primary):

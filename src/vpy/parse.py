@@ -1,5 +1,6 @@
 import abc
 import ast
+import traceback
 from abc import abstractmethod
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
@@ -134,15 +135,41 @@ class AstLiteral(Node):
 
 
 @dataclass(kw_only=True)
+class ListDisplay(Node):
+    xs: "list[FlexibleExpression]"
+
+    @property
+    @override
+    def type(self) -> str:
+        return "list_display"
+
+    def to_ast(self) -> ast.List:
+        return ast.List(elts=[x.to_ast() for x in self.xs])
+
+
+@dataclass(kw_only=True)
+class Enclosure(Node):
+    x: ListDisplay
+
+    @property
+    @override
+    def type(self) -> str:
+        return "enclosure"
+
+    def to_ast(self) -> ast.List:
+        return self.x.to_ast()
+
+
+@dataclass(kw_only=True)
 class Atom(Node):
-    x: AstLiteral | Token
+    x: AstLiteral | Token | Enclosure
 
     @property
     @override
     def type(self) -> str:
         return "atom"
 
-    def to_ast(self) -> ast.Constant | ast.Name:
+    def to_ast(self) -> ast.Constant | ast.Name | ast.List:
         if isinstance(self.x, Token):
             assert self.x.type == "identifier"
             return ast.Name(self.x.nfkd())
@@ -459,6 +486,19 @@ class StarredExpression(Node):
     @override
     def type(self) -> str:
         return "starred_expression"
+
+    def to_ast(self) -> ast.expr:
+        return self.x.to_ast()
+
+
+@dataclass(kw_only=True)
+class FlexibleExpression(Node):
+    x: "AssignmentExpression | StarredExpression"
+
+    @property
+    @override
+    def type(self) -> str:
+        return "flexible_expression"
 
     def to_ast(self) -> ast.expr:
         return self.x.to_ast()
@@ -873,6 +913,13 @@ class Parser:
         except ParseFailedError:
             return None
 
+    def opt_delimiter(self, text: str) -> Token | None:
+        try:
+            with self.checkpoint():
+                return self.expect_delimiter(text)
+        except ParseFailedError:
+            return None
+
     def expect_any(self, typs: set[str]) -> Token:
         res = self.tok()
         if res.type not in typs:
@@ -932,6 +979,33 @@ class Parser:
         return AstLiteral(x=self.expect_any({"decinteger", "floatnumber", "string"}))
 
     @parse_function
+    def list_display(self) -> ListDisplay:
+        xs: list[FlexibleExpression] = []
+
+        _ = self.expect_delimiter("[")
+        _ = self.opt("whitespace")
+
+        while True:
+            try:
+                with self.checkpoint():
+                    xs.append(self.flexible_expression())
+                    _ = self.opt("whitespace")
+                    comma = self.opt_delimiter(",")
+                    if comma is None:
+                        break
+                    _ = self.opt("whitespace")
+            except ParseFailedError:
+                break
+
+        _ = self.expect_delimiter("]")
+
+        return ListDisplay(xs=xs)
+
+    @parse_function
+    def enclosure(self) -> Enclosure:
+        return Enclosure(x=self.list_display())
+
+    @parse_function
     def atom(self) -> Atom:
         ident = self.opt("identifier")
         if ident is not None:
@@ -939,6 +1013,12 @@ class Parser:
                 return Atom(x=AstLiteral(x=ident))
 
             return Atom(x=ident)
+
+        try:
+            with self.checkpoint():
+                return Atom(x=self.enclosure())
+        except ParseFailedError:
+            pass
 
         return Atom(x=self.literal())
 
@@ -1121,6 +1201,16 @@ class Parser:
     @parse_function
     def starred_expression(self) -> StarredExpression:
         return StarredExpression(x=self.or_test())
+
+    @parse_function
+    def flexible_expression(self) -> FlexibleExpression:
+        try:
+            with self.checkpoint():
+                return FlexibleExpression(x=self.assignment_expression())
+        except ParseFailedError:
+            ...
+
+        return FlexibleExpression(x=self.starred_expression())
 
     @parse_function
     def conditional_expression(self) -> ConditionalExpression:

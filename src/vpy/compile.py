@@ -18,12 +18,15 @@ from .parse import (
     Comparison,
     CompoundStmt,
     ConditionalExpression,
+    Enclosure,
     Expression,
     ExpressionList,
     ExpressionStmt,
     FileInput,
+    FlexibleExpression,
     Funcdef,
     IfStmt,
+    ListDisplay,
     MExpr,
     Node,
     NotTest,
@@ -62,15 +65,16 @@ def llvmid(prefix: str, idx: int) -> str:
     return llvmstr(res)
 
 
-def struct_sizeof(x: str) -> str:
+def struct_sizeof(x: str, out: str = "size") -> str:
     return f"""
-    %size_ptr = getelementptr {x}, ptr null, i64 1
-    %size = ptrtoint ptr %size_ptr to i64
+    %{out}_ptr = getelementptr {x}, ptr null, i64 1
+    %{out} = ptrtoint ptr %{out}_ptr to i64
     """.lstrip().rstrip()
 
 
 prelude = rf"""
 declare ptr @malloc(i64)
+declare ptr @memset(ptr, i32, i64)
 
 declare void @abort() noreturn
 declare i64 @puts(ptr)
@@ -124,6 +128,26 @@ define ptr @make_float(double %x) {{
     ret ptr %res
 }}
 
+define ptr @make_list(i64 %len) {{
+    {struct_sizeof("{i64, i64}", "size_base")}
+    {struct_sizeof("{ptr}", "size_each")}
+
+    %size.value = mul i64 %size_each, %len
+    %size = add i64 %size_base, %size.value
+
+    %res = call ptr @malloc(i64 %size)
+    store i64 100, ptr %res
+
+    %data_ptr = getelementptr %struct.value, ptr %res, i64 0, i32 1
+    store i64 %len, ptr %data_ptr
+
+    %value_ptr = getelementptr {{i64, [0 x ptr]}}, ptr %data_ptr, i64 0, i32 1
+    ; 0xdeadbeef = 3735928559
+    call ptr @memset(ptr %value_ptr, i32 3735928559, i64 %size.value)
+
+    ret ptr %res
+}}
+
 define void @expect_type(ptr %x, i64 %expected) {{
     %type_id = load i64, ptr %x
 
@@ -164,6 +188,14 @@ define double @expect_float(ptr %x) {{
     %res = load double, ptr %ptr
 
     ret double %res
+}}
+
+define ptr @expect_list(ptr %x) {{
+    call void @expect_type(ptr %x, i64 100)
+
+    %ptr = getelementptr %struct.value, ptr %x, i64 0, i32 1
+
+    ret ptr %ptr
 }}
 """
 
@@ -225,6 +257,9 @@ class Scope:
             return self.compile_expr(x.value)
 
         if isinstance(x, StarredExpression):
+            return self.compile_expr(x.x)
+
+        if isinstance(x, FlexibleExpression):
             return self.compile_expr(x.x)
 
         if isinstance(x, OrTest):
@@ -373,6 +408,27 @@ class Scope:
             self.emit(f"%{res} = call ptr %{f}(ptr %{args})")
 
             return res
+
+        if isinstance(x, ListDisplay):
+            l = len(x.xs)
+
+            res = self.next_id(prefix="list")
+            self.emit(f"%{res} = call ptr @make_list(i64 {l})")
+
+            for i, node in enumerate(x.xs):
+                item = self.compile_expr(node)
+
+                item_ptr = self.next_id(prefix=f"list.{i}.ptr")
+                self.emit(
+                    f"%{item_ptr} = getelementptr {{ i64, i64, [{l} x ptr] }}, ptr %{res}, i64 0, i32 2, i32 {i}"
+                )
+
+                self.emit(f"store ptr %{item}, ptr %{item_ptr}")
+
+            return res
+
+        if isinstance(x, Enclosure):
+            return self.compile_expr(x.x)
 
         if isinstance(x, Atom):
             if isinstance(x.x, Token):
